@@ -311,12 +311,28 @@ class BrowserHolder(private val activity: Activity) {
         return UNSUPPORTED.any { host == it || host.endsWith(".$it") }
     }
 
+    /**
+     * Some players fetch one MP4 in slices by adding byte offsets to the address
+     * (…&bytestart=0&byteend=65535). Dropping those gives the address of the whole file.
+     */
+    private fun wholeFile(link: String): String {
+        if (!link.contains("bytestart=") && !link.contains("byteend=")) return link
+        val base = link.substringBefore('?')
+        val kept = link.substringAfter('?', "").substringBefore('#').split('&')
+            .filter { it.isNotEmpty() && !it.startsWith("bytestart=") && !it.startsWith("byteend=") }
+        return if (kept.isEmpty()) base else base + "?" + kept.joinToString("&")
+    }
+
     /** Called from any thread when something that looks like media is seen. */
-    fun offer(link: String, type: String, name: String? = null, extraHeaders: Map<String, String> = emptyMap()) {
+    fun offer(rawLink: String, type: String, name: String? = null, extraHeaders: Map<String, String> = emptyMap()) {
+        val link = wholeFile(rawLink)
         activity.runOnUiThread {
             val page = url
             if (unsupported(link) || unsupported(page)) { blockedNotice = true; return@runOnUiThread }
-            if (detected.any { it.url == link }) return@runOnUiThread
+            // A player usually asks for the same file many times (one request per chunk, each
+            // with a fresh query string), so one entry per file is enough.
+            val key = link.substringBefore('?')
+            if (detected.any { it.url.substringBefore('?') == key }) return@runOnUiThread
             val headers = LinkedHashMap<String, String>()
             extraHeaders.forEach { (k, v) ->
                 if (!k.equals("Range", true) && !k.equals("Accept-Encoding", true)) headers[k] = v
