@@ -85,6 +85,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import com.vdo.app.AppBus
 import com.vdo.app.data.PlayItem
 import com.vdo.app.data.Store
@@ -139,6 +141,90 @@ private const val SNIFF_JS = """
 })();
 """
 
+/**
+ * Runs before the page's own scripts. Many sites hide their stream behind a script-driven
+ * player with no visible link and an address that doesn't end in .m3u8/.mpd. This watches what
+ * the page's player itself loads and recognises stream manifests by their content, so VDO can
+ * fetch the same segments the player would have cached. It also notices when a page asks for a
+ * DRM licence, so the user is told up front that the stream is encrypted.
+ */
+private const val HOOK_JS = """
+(function(){
+  if (window.__vdoHook) return; window.__vdoHook = true;
+  var sent = {};
+  function abs(u){ try { return new URL(u, location.href).href; } catch (e) { return null; } }
+  function report(u, kind){
+    u = abs(u);
+    if (!u || u.indexOf('http') !== 0 || sent[u]) return;
+    sent[u] = 1;
+    try { VDO.found(u, kind); } catch (e) {}
+  }
+  function kindOf(type, head){
+    type = (type || '').toLowerCase();
+    if (type.indexOf('mpegurl') >= 0) return 'M3U8';
+    if (type.indexOf('dash+xml') >= 0) return 'MPD';
+    if (head) {
+      var h = head.replace(/^\uFEFF/, '').trimStart();
+      if (h.indexOf('#EXTM3U') === 0) return 'M3U8';
+      if (h.indexOf('<MPD') >= 0 && h.indexOf('<MPD') < 600) return 'MPD';
+    }
+    return null;
+  }
+  function texty(type){
+    type = (type || '').toLowerCase();
+    return !type || type.indexOf('text/') === 0 || type.indexOf('xml') >= 0 || type.indexOf('json') >= 0 ||
+      type.indexOf('octet-stream') >= 0 || type.indexOf('mpegurl') >= 0;
+  }
+  var realFetch = window.fetch;
+  if (realFetch) {
+    window.fetch = function(input, init){
+      var p = realFetch.apply(this, arguments);
+      try {
+        p.then(function(res){
+          try {
+            var type = res.headers.get('content-type');
+            var k = kindOf(type, null);
+            if (k) { report(res.url, k); return; }
+            var len = parseInt(res.headers.get('content-length') || '0', 10);
+            if (!texty(type) || len > 1500000) return;
+            res.clone().text().then(function(t){
+              var k2 = kindOf(type, t.slice(0, 800));
+              if (k2) report(res.url, k2);
+            }).catch(function(){});
+          } catch (e) {}
+        }).catch(function(){});
+      } catch (e) {}
+      return p;
+    };
+  }
+  var open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url){
+    var xhr = this;
+    try {
+      xhr.addEventListener('load', function(){
+        try {
+          var type = xhr.getResponseHeader('content-type');
+          var head = null;
+          if (xhr.responseType === '' || xhr.responseType === 'text') head = (xhr.responseText || '').slice(0, 800);
+          var k = kindOf(type, head);
+          if (k) report(xhr.responseURL || url, k);
+        } catch (e) {}
+      });
+    } catch (e) {}
+    return open.apply(this, arguments);
+  };
+  try {
+    var rmksa = navigator.requestMediaKeySystemAccess;
+    if (rmksa) {
+      navigator.requestMediaKeySystemAccess = function(){
+        try { VDO.protectedContent(); } catch (e) {}
+        return rmksa.apply(this, arguments);
+      };
+    }
+  } catch (e) {}
+})();
+"""
+
 /** Owns the WebView so the page survives switching between tabs. */
 @SuppressLint("SetJavaScriptEnabled")
 class BrowserHolder(private val activity: Activity) {
@@ -149,9 +235,11 @@ class BrowserHolder(private val activity: Activity) {
     var canGoForward by mutableStateOf(false)
     var fullscreen by mutableStateOf<View?>(null)
     var blockedNotice by mutableStateOf(false)
+    var drmNotice by mutableStateOf(false)
     val detected = mutableStateListOf<Detected>()
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
     private var created = false
+    private var earlyHook = false
     private val mobileUa: String by lazy { WebSettings.getDefaultUserAgent(activity) }
 
     val webView: WebView by lazy {
@@ -174,6 +262,8 @@ class BrowserHolder(private val activity: Activity) {
             }
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
             addJavascriptInterface(Bridge(), "VDO")
+            earlyHook = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+            if (earlyHook) WebViewCompat.addDocumentStartJavaScript(this, HOOK_JS, setOf("*"))
             webViewClient = Client()
             webChromeClient = Chrome()
             setDownloadListener { link, _, disposition, _, _ ->
@@ -242,7 +332,18 @@ class BrowserHolder(private val activity: Activity) {
         @JavascriptInterface
         fun found(link: String, tag: String) {
             val ext = MEDIA.find(link)?.groupValues?.get(1)?.uppercase()
-            offer(link, ext ?: if (tag.equals("AUDIO", true)) "AUDIO" else "VIDEO")
+            val type = when {
+                tag == "M3U8" || tag == "MPD" -> tag // recognised by content, whatever the address looks like
+                ext != null -> ext
+                tag.equals("AUDIO", true) -> "AUDIO"
+                else -> "VIDEO"
+            }
+            offer(link, type)
+        }
+
+        @JavascriptInterface
+        fun protectedContent() {
+            activity.runOnUiThread { drmNotice = true }
         }
     }
 
@@ -269,6 +370,9 @@ class BrowserHolder(private val activity: Activity) {
             url = link
             detected.clear()
             blockedNotice = false
+            drmNotice = false
+            // Older WebViews can't inject at document start; this is the earliest fallback.
+            if (!earlyHook) view.evaluateJavascript(HOOK_JS, null)
         }
 
         override fun onPageFinished(view: WebView, link: String) {
@@ -444,12 +548,13 @@ fun BrowserScreen(holder: BrowserHolder) {
                 icon = { Icon(Icons.Rounded.Download, null) },
                 text = { Text("${holder.detected.size} found") },
             )
-        } else if (holder.blockedNotice) {
+        } else if (holder.blockedNotice || holder.drmNotice) {
             Text(
-                "Downloads aren't available on this site",
+                if (holder.blockedNotice) "Downloads aren't available on this site"
+                else "This video is DRM-encrypted and can't be saved",
                 color = Color.White, fontSize = 12.sp,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 60.dp).clip(RoundedCornerShape(50))
-                    .background(Color(0xE61F2760)).clickable { holder.blockedNotice = false }
+                    .background(Color(0xE61F2760)).clickable { holder.blockedNotice = false; holder.drmNotice = false }
                     .padding(horizontal = 14.dp, vertical = 8.dp),
             )
         }
