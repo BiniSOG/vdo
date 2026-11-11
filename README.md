@@ -27,8 +27,9 @@ Kotlin, Jetpack Compose, Media3 (ExoPlayer). Android 8.0+ (API 26).
 - Address bar with search, bookmarks, history, desktop mode, ad/tracker blocking, HTML5 fullscreen video
 - Detects media from network requests and `<video>` / `<audio>` elements
 
-**Library**
-- Device videos and music with thumbnails, search, sort, folder filter and shuffle
+**Videos and Music**
+- Everything on the device, with thumbnails, search, sort, grid or list, play all and shuffle
+- Music grouped by folder, artist, genre, date or name; videos by folder, date or name
 
 ## What it does not do
 
@@ -42,11 +43,37 @@ Only download content you own or are allowed to save.
 
 ```
 ./gradlew :app:assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
-./gradlew :app:testDebugUnitTest    # parser + cache/merge/resume tests
 ```
 
 Requires JDK 17+ and the Android SDK (platform 35). CI builds the APK on every push
 and attaches it to the workflow run as `VDO-debug-apk`.
+
+## Tests
+
+```
+./gradlew :app:testDebugUnitTest
+```
+
+- `DownloadCoreTest` — playlist/manifest parsing and the cache, decrypt, merge and resume pipeline.
+- `ScreensTest` — renders every screen with sample data to `app/build/outputs/roborazzi/*.png`.
+
+`DeviceTest` runs on a device or emulator (`./gradlew :app:connectedDebugAndroidTest`). It downloads
+an encrypted HLS stream and checks the result is one MP4 with video and audio, downloads a plain file,
+uses the private folder, reads the media library, plays a video through the playback service and opens
+every screen. It expects sample media on the device and a file server on the host at port 8765:
+
+```
+ffmpeg -f lavfi -i testsrc2=size=640x360:rate=24 -f lavfi -i sine=frequency=440 -t 20 \
+       -c:v libx264 -pix_fmt yuv420p -c:a aac sample-clip.mp4
+ffmpeg -f lavfi -i sine=frequency=330 -t 15 -metadata title="Evening Tone" \
+       -metadata artist="Test Artist" -metadata genre="Ambient" tone1.mp3
+ffmpeg -f lavfi -i sine=frequency=550 -t 15 -metadata title="Morning Tone" \
+       -metadata artist="Second Artist" -metadata genre="Jazz" tone2.mp3
+# HLS copy of sample-clip.mp4 with AES-128 in ./hls/index.m3u8, then:
+python3 -m http.server 8765
+adb push sample-clip.mp4 /sdcard/Movies/
+adb push tone1.mp3 /sdcard/Music/Relax/ && adb push tone2.mp3 /sdcard/Music/
+```
 
 ## Layout
 
@@ -55,5 +82,5 @@ and attaches it to the workflow run as `VDO-debug-apk`.
 | `app/src/main/java/com/vdo/app/download` | Probe, HLS/DASH parsers, segment cache + merge, remuxer, queue, service |
 | `app/src/main/java/com/vdo/app/player` | Playback service (Media3 session) and player screen |
 | `app/src/main/java/com/vdo/app/browser` | WebView browser and media detection |
-| `app/src/main/java/com/vdo/app/ui` | Home, Library, Downloads, Settings, theme |
+| `app/src/main/java/com/vdo/app/ui` | Home, Videos/Music, Downloads, Settings, theme |
 | `branding/` | Source logo and icon artwork |

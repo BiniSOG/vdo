@@ -3,57 +3,61 @@ package com.vdo.app.ui
 import android.content.Intent
 import android.os.Build
 import android.provider.MediaStore
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Sort
+import androidx.compose.material.icons.automirrored.rounded.ViewList
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Category
-import androidx.compose.material.icons.rounded.Folder
-import androidx.compose.material.icons.rounded.Person
-import androidx.compose.material.icons.rounded.SortByAlpha
-import androidx.compose.ui.graphics.vector.ImageVector
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material.icons.rounded.SortByAlpha
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -68,20 +72,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
 import com.vdo.app.data.LocalMedia
 import com.vdo.app.data.MediaRepository
+import com.vdo.app.data.Store
 import com.vdo.app.player.PlayerHub
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /** Ways to categorise the library. Artist and genre only make sense for music. */
-private enum class GroupBy(val label: String, val icon: ImageVector, val musicOnly: Boolean = false) {
+enum class GroupBy(val label: String, val icon: ImageVector, val musicOnly: Boolean = false) {
     FOLDER("Folders", Icons.Rounded.Folder),
     ARTIST("Artists", Icons.Rounded.Person, true),
     GENRE("Genres", Icons.Rounded.Category, true),
@@ -99,76 +105,111 @@ private enum class GroupBy(val label: String, val icon: ImageVector, val musicOn
 
 private enum class SortBy(val label: String) { DATE("Newest first"), NAME("Name"), SIZE("Largest first"), DURATION("Longest first") }
 
+/** The Videos or Music tab: loads media from the device and hands it to [LibraryContent]. */
 @Composable
-fun LibraryScreen() {
+fun LibraryScreen(audio: Boolean) {
     val ctx = LocalContext.current
     var granted by remember { mutableStateOf(MediaRepository.hasPermission(ctx)) }
-    var tab by rememberSaveable { mutableIntStateOf(0) }
-    var videos by remember { mutableStateOf<List<LocalMedia>?>(null) }
-    var audio by remember { mutableStateOf<List<LocalMedia>?>(null) }
+    var items by remember(audio) { mutableStateOf<List<LocalMedia>?>(null) }
     var reload by remember { mutableIntStateOf(0) }
-    var query by rememberSaveable { mutableStateOf("") }
-    var searching by rememberSaveable { mutableStateOf(false) }
-    var sort by rememberSaveable { mutableStateOf(SortBy.DATE) }
-    var sortMenu by remember { mutableStateOf(false) }
-    // How the list is categorised (null = everything in one list) and which category is open.
-    var groupBy by rememberSaveable { mutableStateOf<GroupBy?>(null) }
-    var group by rememberSaveable { mutableStateOf<String?>(null) }
-    var info by remember { mutableStateOf<LocalMedia?>(null) }
 
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
         granted = r.values.any { it }
     }
     val deleter = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { reload++ }
 
-    LaunchedEffect(granted, reload) {
-        if (granted) {
-            videos = MediaRepository.load(ctx, false)
-            audio = MediaRepository.load(ctx, true)
-        }
+    LaunchedEffect(granted, reload, audio) {
+        if (granted) items = MediaRepository.load(ctx, audio)
     }
 
+    LibraryContent(
+        audio = audio,
+        items = items,
+        granted = granted,
+        onGrant = { ask.launch(MediaRepository.permissions()) },
+        onPlay = { list, index -> PlayerHub.play(ctx, list.map { it.toPlayItem() }, index) },
+        onShare = { m ->
+            val send = Intent(Intent.ACTION_SEND).setType(if (m.isAudio) "audio/*" else "video/*")
+                .putExtra(Intent.EXTRA_STREAM, m.uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            ctx.startActivity(Intent.createChooser(send, "Share"))
+        },
+        onDelete = if (Build.VERSION.SDK_INT >= 30) { m ->
+            val pi = MediaStore.createDeleteRequest(ctx.contentResolver, listOf(m.uri))
+            deleter.launch(IntentSenderRequest.Builder(pi.intentSender).build())
+        } else null,
+    )
+}
+
+@Composable
+fun LibraryContent(
+    audio: Boolean,
+    items: List<LocalMedia>?,
+    granted: Boolean,
+    onGrant: () -> Unit,
+    onPlay: (List<LocalMedia>, Int) -> Unit,
+    onShare: (LocalMedia) -> Unit,
+    onDelete: ((LocalMedia) -> Unit)?,
+    initialGroupBy: GroupBy? = null,
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    var searching by rememberSaveable { mutableStateOf(false) }
+    var sort by rememberSaveable { mutableStateOf(SortBy.DATE) }
+    var sortMenu by remember { mutableStateOf(false) }
+    var grid by remember { mutableStateOf(!audio && Store.videoGrid) }
+    // How the list is categorised (null = everything in one list) and which category is open.
+    var groupBy by rememberSaveable { mutableStateOf(initialGroupBy) }
+    var group by rememberSaveable { mutableStateOf<String?>(null) }
+    var info by remember { mutableStateOf<LocalMedia?>(null) }
+    val noun = if (audio) "song" else "video"
+
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (searching) {
-                OutlinedTextField(
-                    value = query, onValueChange = { query = it }, singleLine = true,
-                    placeholder = { Text("Search your media") }, modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(16.dp),
-                    trailingIcon = {
-                        IconButton(onClick = { query = ""; searching = false }) { Icon(Icons.Rounded.Close, "Close search") }
-                    },
-                )
-            } else {
-                Text("Library", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.weight(1f))
+        if (searching) {
+            OutlinedTextField(
+                value = query, onValueChange = { query = it }, singleLine = true,
+                placeholder = { Text(if (audio) "Search songs and artists" else "Search videos") },
+                leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                trailingIcon = {
+                    IconButton(onClick = { query = ""; searching = false }) { Icon(Icons.Rounded.Close, "Close search") }
+                },
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+        } else {
+            ScreenTitle(if (audio) "Music" else "Videos") {
+                if (!granted || items.isNullOrEmpty()) return@ScreenTitle
                 IconButton(onClick = { searching = true }) { Icon(Icons.Rounded.Search, "Search", tint = Color.White) }
-            }
-            Box {
-                IconButton(onClick = { sortMenu = true }) { Icon(Icons.AutoMirrored.Rounded.Sort, "Sort", tint = Color.White) }
-                DropdownMenu(sortMenu, onDismissRequest = { sortMenu = false }) {
-                    SortBy.entries.forEach {
-                        DropdownMenuItem(
-                            text = { Text(it.label, color = if (it == sort) VdoColors.RoseGold else Color.Unspecified) },
-                            onClick = { sort = it; sortMenu = false },
+                if (!audio) {
+                    IconButton(onClick = { grid = !grid; Store.videoGrid = grid }) {
+                        Icon(
+                            if (grid) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.GridView,
+                            if (grid) "Show as list" else "Show as grid", tint = Color.White,
                         )
+                    }
+                }
+                Box {
+                    IconButton(onClick = { sortMenu = true }) { Icon(Icons.AutoMirrored.Rounded.Sort, "Sort", tint = Color.White) }
+                    DropdownMenu(sortMenu, onDismissRequest = { sortMenu = false }) {
+                        SortBy.entries.forEach {
+                            DropdownMenuItem(
+                                text = { Text(it.label, color = if (it == sort) VdoColors.RoseGold else Color.Unspecified) },
+                                onClick = { sort = it; sortMenu = false },
+                            )
+                        }
                     }
                 }
             }
         }
-        TabRow(selectedTabIndex = tab, containerColor = Color.Transparent, contentColor = VdoColors.RoseGold) {
-            Tab(tab == 0, onClick = { tab = 0; groupBy = null; group = null }, text = { Text("Videos" + (videos?.let { " (${it.size})" } ?: "")) })
-            Tab(tab == 1, onClick = { tab = 1; groupBy = null; group = null }, text = { Text("Music" + (audio?.let { " (${it.size})" } ?: "")) })
-        }
 
         if (!granted) {
-            Empty(Icons.Rounded.VideoLibrary, "See your videos and music", "Allow access so VDO can list the media on this device.") {
-                Button(onClick = { ask.launch(MediaRepository.permissions()) }) { Text("Allow access") }
-            }
+            Empty(
+                if (audio) Icons.Rounded.MusicNote else Icons.Rounded.VideoLibrary,
+                if (audio) "Play the music on your phone" else "Play the videos on your phone",
+                "Allow access and VDO will list everything on this device, ready to play.",
+            ) { Button(onClick = onGrant) { Text("Allow access") } }
             return@Column
         }
+        val all = items ?: return@Column
 
-        val all = (if (tab == 0) videos else audio)
-        if (all == null) return@Column
         val by = groupBy
         val matching = remember(all, query) {
             all.filter { query.isBlank() || it.title.contains(query, true) || it.artist.contains(query, true) }
@@ -184,10 +225,15 @@ fun LibraryScreen() {
             }
         }
 
-        LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            item { FilterChip(by == null, onClick = { groupBy = null; group = null }, label = { Text(if (tab == 0) "All videos" else "All songs") }) }
-            items(GroupBy.entries.filter { tab == 1 || !it.musicOnly }) { g ->
-                FilterChip(by == g, onClick = { groupBy = g; group = null }, label = { Text(g.label) })
+        if (all.isNotEmpty()) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(bottom = 4.dp),
+            ) {
+                item { FilterChip(by == null, onClick = { groupBy = null; group = null }, label = { Text("All ${noun}s") }) }
+                items(GroupBy.entries.filter { audio || !it.musicOnly }) { g ->
+                    FilterChip(by == g, onClick = { groupBy = g; group = null }, label = { Text(g.label) })
+                }
             }
         }
 
@@ -203,25 +249,25 @@ fun LibraryScreen() {
                 Empty(by.icon, "Nothing here yet", "Media on your device will be organised here.")
                 return@Column
             }
-            LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
+            LazyVerticalGrid(GridCells.Adaptive(320.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
                 items(groups, key = { it.first }) { (name, members) ->
                     Row(
-                        Modifier.fillMaxWidth().clickable { group = name }.padding(horizontal = 16.dp, vertical = 10.dp),
+                        Modifier.fillMaxWidth().clickable { group = name }.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Box(
-                            Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)).background(VdoColors.SurfaceHigh),
+                            Modifier.size(52.dp).clip(RoundedCornerShape(16.dp)).background(VdoColors.Surface),
                             contentAlignment = Alignment.Center,
                         ) { Icon(by.icon, null, tint = VdoColors.RoseGold) }
                         Spacer(Modifier.width(14.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(name, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 15.sp)
+                            Text(name, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 16.sp)
                             Text(
-                                "${members.size} ${if (tab == 0) "video" else "song"}${if (members.size == 1) "" else "s"} · " +
-                                    formatTime(members.sumOf { it.duration }),
-                                color = VdoColors.Muted, fontSize = 12.sp,
+                                "${members.size} $noun${if (members.size == 1) "" else "s"} · " + formatTime(members.sumOf { it.duration }),
+                                color = VdoColors.Muted, fontSize = 13.sp,
                             )
                         }
+                        Icon(Icons.Rounded.ChevronRight, null, tint = VdoColors.Muted)
                     }
                 }
             }
@@ -230,54 +276,51 @@ fun LibraryScreen() {
 
         if (by != null && group != null) {
             BackHandler { group = null }
-            Row(
-                Modifier.fillMaxWidth().clickable { group = null }.padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = { group = null }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back to ${by.label}", tint = Color.White) }
+            Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { group = null }) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back to ${by.label}", tint = Color.White)
+                }
                 Column {
-                    Text(group!!, color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(by.label, color = VdoColors.Muted, fontSize = 12.sp)
+                    Text(group!!, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${by.label} · ${shown.size} $noun${if (shown.size == 1) "" else "s"}", color = VdoColors.Muted, fontSize = 12.sp)
                 }
             }
         }
 
         if (shown.isEmpty()) {
             Empty(
-                if (tab == 0) Icons.Rounded.VideoLibrary else Icons.Rounded.MusicNote,
-                if (query.isBlank()) "Nothing here yet" else "No matches",
-                if (query.isBlank()) "Media on your device and your downloads will show up here." else "Try a different search.",
+                if (audio) Icons.Rounded.MusicNote else Icons.Rounded.VideoLibrary,
+                if (query.isBlank()) "No ${noun}s found" else "No matches",
+                if (query.isBlank()) "Media saved on this device and your downloads will show up here." else "Try a different search.",
             )
             return@Column
         }
 
-        LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
-            if (shown.size > 1) item {
-                TextButton(
-                    onClick = { val s = shown.shuffled(); PlayerHub.play(ctx, s.map { it.toPlayItem() }, 0) },
-                    modifier = Modifier.padding(horizontal = 8.dp),
+        val useGrid = grid && !audio
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(if (useGrid) 156.dp else 320.dp),
+            contentPadding = PaddingValues(start = if (useGrid) 12.dp else 0.dp, end = if (useGrid) 12.dp else 0.dp, bottom = 16.dp),
+        ) {
+            if (shown.size > 1) item(span = { GridItemSpan(maxLineSpan) }) {
+                Row(
+                    Modifier.padding(horizontal = if (useGrid) 4.dp else 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    Icon(Icons.Rounded.Shuffle, null, tint = VdoColors.RoseGold)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Shuffle all", color = VdoColors.RoseGold)
+                    Button(onClick = { onPlay(shown, 0) }, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Rounded.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text("Play all")
+                    }
+                    FilledTonalButton(onClick = { onPlay(shown.shuffled(), 0) }, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Rounded.Shuffle, null); Spacer(Modifier.width(6.dp)); Text("Shuffle")
+                    }
                 }
             }
             itemsIndexed(shown, key = { _, m -> "${m.isAudio}-${m.id}" }) { index, m ->
-                MediaRow(
-                    m,
-                    onPlay = { PlayerHub.play(ctx, shown.map { it.toPlayItem() }, index) },
-                    onShare = {
-                        val send = Intent(Intent.ACTION_SEND).setType(if (m.isAudio) "audio/*" else "video/*")
-                            .putExtra(Intent.EXTRA_STREAM, m.uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        ctx.startActivity(Intent.createChooser(send, "Share"))
-                    },
+                MediaItemView(
+                    m, card = useGrid,
+                    onPlay = { onPlay(shown, index) },
+                    onShare = { onShare(m) },
                     onInfo = { info = m },
-                    onDelete = if (Build.VERSION.SDK_INT >= 30) {
-                        {
-                            val pi = MediaStore.createDeleteRequest(ctx.contentResolver, listOf(m.uri))
-                            deleter.launch(IntentSenderRequest.Builder(pi.intentSender).build())
-                        }
-                    } else null,
+                    onDelete = onDelete?.let { d -> { d(m) } },
                 )
             }
         }
@@ -289,7 +332,7 @@ fun LibraryScreen() {
             confirmButton = { TextButton(onClick = { info = null }) { Text("Close") } },
             title = { Text(m.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
             text = {
-                Column {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Folder: ${m.folder}")
                     Text("Duration: ${formatTime(m.duration)}")
                     Text("Size: ${formatSize(m.size)}")
@@ -303,42 +346,23 @@ fun LibraryScreen() {
     }
 }
 
+/** One video or song, as a grid card (thumbnail on top) or a list row. Long-press opens the menu too. */
 @Composable
-private fun MediaRow(m: LocalMedia, onPlay: () -> Unit, onShare: () -> Unit, onInfo: () -> Unit, onDelete: (() -> Unit)?) {
+private fun MediaItemView(
+    m: LocalMedia, card: Boolean,
+    onPlay: () -> Unit, onShare: () -> Unit, onInfo: () -> Unit, onDelete: (() -> Unit)?,
+) {
     var menu by remember { mutableStateOf(false) }
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onPlay).padding(start = 16.dp, top = 8.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            Modifier.width(if (m.isAudio) 56.dp else 112.dp).height(if (m.isAudio) 56.dp else 64.dp)
-                .clip(RoundedCornerShape(12.dp)).background(VdoColors.SurfaceHigh),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(if (m.isAudio) Icons.Rounded.MusicNote else Icons.Rounded.VideoLibrary, null, tint = VdoColors.Muted)
-            AsyncImage(
-                model = if (m.isAudio) m.artwork else m.uri, contentDescription = null,
-                contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(),
-            )
-            if (!m.isAudio && m.duration > 0) {
-                Text(
-                    formatTime(m.duration), color = Color.White, fontSize = 10.sp,
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp).clip(RoundedCornerShape(4.dp))
-                        .background(Color(0xB3000000)).padding(horizontal = 4.dp, vertical = 1.dp),
-                )
-            }
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(m.title, color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 15.sp)
-            Text(
-                if (m.isAudio) "${m.artist} · ${formatTime(m.duration)}"
-                else listOfNotNull(formatSize(m.size), if (m.height > 0) "${m.height}p" else null, m.folder).joinToString(" · "),
-                color = VdoColors.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            )
-        }
+    val watched = Store.watched(m.uri.toString())
+    val meta = if (m.isAudio) "${m.artist} · ${formatTime(m.duration)}"
+    else listOfNotNull(formatSize(m.size), if (m.height > 0) "${m.height}p" else null, if (card) null else m.folder).joinToString(" · ")
+
+    @Composable
+    fun Menu() {
         Box {
-            IconButton(onClick = { menu = true }) { Icon(Icons.Rounded.MoreVert, "More", tint = VdoColors.Muted) }
+            IconButton(onClick = { menu = true }, modifier = Modifier.size(if (card) 32.dp else 48.dp)) {
+                Icon(Icons.Rounded.MoreVert, "More options", tint = VdoColors.Muted)
+            }
             DropdownMenu(menu, onDismissRequest = { menu = false }) {
                 DropdownMenuItem(text = { Text("Play") }, onClick = { menu = false; onPlay() })
                 DropdownMenuItem(text = { Text("Share") }, onClick = { menu = false; onShare() })
@@ -347,21 +371,41 @@ private fun MediaRow(m: LocalMedia, onPlay: () -> Unit, onShare: () -> Unit, onI
             }
         }
     }
-}
 
-@Composable
-fun Empty(
-    icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, body: String,
-    action: @Composable () -> Unit = {},
-) {
-    Column(
-        Modifier.fillMaxSize().padding(40.dp), horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Icon(icon, null, tint = VdoColors.Violet, modifier = Modifier.size(64.dp))
-        Spacer(Modifier.height(16.dp))
-        Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp, textAlign = TextAlign.Center)
-        Text(body, color = VdoColors.Muted, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp, bottom = 20.dp))
-        action()
+    if (card) {
+        Column(
+            Modifier.padding(4.dp).clip(RoundedCornerShape(16.dp))
+                .combinedClickable(onClick = onPlay, onLongClick = { menu = true }).padding(bottom = 6.dp),
+        ) {
+            Thumb(
+                m.uri, Icons.Rounded.PlayArrow, Modifier.fillMaxWidth().aspectRatio(16f / 10f),
+                watched = watched, badge = if (m.duration > 0) formatTime(m.duration) else null,
+            )
+            Row(Modifier.padding(start = 4.dp, top = 6.dp), verticalAlignment = Alignment.Top) {
+                Column(Modifier.weight(1f)) {
+                    Text(m.title, color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, lineHeight = 18.sp)
+                    Text(meta, color = VdoColors.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Menu()
+            }
+        }
+    } else {
+        Row(
+            Modifier.fillMaxWidth().combinedClickable(onClick = onPlay, onLongClick = { menu = true })
+                .padding(start = 16.dp, top = 7.dp, bottom = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (m.isAudio) Thumb(m.artwork, Icons.Rounded.MusicNote, Modifier.size(52.dp), corner = 12.dp)
+            else Thumb(
+                m.uri, Icons.Rounded.PlayArrow, Modifier.width(116.dp).height(68.dp), corner = 12.dp,
+                watched = watched, badge = if (m.duration > 0) formatTime(m.duration) else null,
+            )
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(m.title, color = Color.White, maxLines = if (m.isAudio) 1 else 2, overflow = TextOverflow.Ellipsis, fontSize = 15.sp)
+                Text(meta, color = VdoColors.Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Menu()
+        }
     }
 }

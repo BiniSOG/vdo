@@ -14,9 +14,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Remove
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -37,7 +44,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vdo.app.data.Store
 import com.vdo.app.download.Downloads
-import kotlin.math.roundToInt
 
 private val engines = listOf(
     "Google" to "https://www.google.com/search?q=",
@@ -46,28 +52,28 @@ private val engines = listOf(
 )
 
 @Composable
-fun SettingsScreen() {
+fun SettingsScreen(onBack: () -> Unit = {}) {
     val ctx = LocalContext.current
     var pinDialog by remember { mutableStateOf(false) }
     var engine by remember { mutableStateOf(Store.searchEngine) }
     var hasPin by remember { mutableStateOf(Store.hasPin) }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
-        Text(
-            "Settings", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White,
-            modifier = Modifier.padding(start = 16.dp, top = 8.dp),
-        )
+        Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = Color.White) }
+            Text("Settings", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        }
 
         Section("Player")
         Toggle("Resume where you left off", "Continue videos and audio from the last position", Store.resumePlayback) { Store.resumePlayback = it }
         Toggle("Background play for videos", "Keep the sound playing when you leave the player", Store.backgroundVideo) { Store.backgroundVideo = it }
         Toggle("Automatic picture-in-picture", "Shrink the video into a floating window when you press Home", Store.autoPip) { Store.autoPip = it }
         Toggle("Swipe gestures", "Swipe for brightness, volume and seeking", Store.gestures) { Store.gestures = it }
-        Stepper("Double-tap seek", Store.seekSeconds, 5..60, 5, { "$it seconds" }) { Store.seekSeconds = it }
+        Stepper("Double-tap seek", Store.seekSeconds, 5..60, 5, { "$it s" }) { Store.seekSeconds = it }
 
         Section("Downloads")
         Stepper("Simultaneous downloads", Store.maxConcurrent, 1..5, 1, { "$it" }) { Store.maxConcurrent = it; Downloads.pump() }
-        Stepper("Connections per download", Store.threads, 1..12, 1, { "$it — more is faster on good networks" }) { Store.threads = it }
+        Stepper("Connections per download", Store.threads, 1..12, 1, { "$it" }) { Store.threads = it }
         Toggle("Download on Wi-Fi only", "Pause downloads on mobile data", Store.wifiOnly) { Store.wifiOnly = it; Downloads.pump() }
         Toggle("Notify when a download finishes", null, Store.notifyDone) { Store.notifyDone = it }
 
@@ -165,19 +171,17 @@ private fun Toggle(title: String, subtitle: String?, initial: Boolean, onChange:
 
 @Composable
 private fun Stepper(title: String, initial: Int, range: IntRange, step: Int, label: (Int) -> String, onChange: (Int) -> Unit) {
-    var value by remember { mutableIntStateOf(initial) }
-    Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
-        Row {
-            Text(title, color = Color.White, modifier = Modifier.weight(1f))
-            Text(label(value), color = VdoColors.Muted, fontSize = 13.sp)
+    var value by remember { mutableIntStateOf(initial.coerceIn(range.first, range.last)) }
+    fun set(v: Int) { value = v.coerceIn(range.first, range.last); onChange(value) }
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, color = Color.White, modifier = Modifier.weight(1f))
+        IconButton(onClick = { set(value - step) }, enabled = value > range.first) {
+            Icon(Icons.Rounded.Remove, "Less", tint = if (value > range.first) VdoColors.RoseGold else VdoColors.Muted)
         }
-        Slider(
-            value = value.toFloat(),
-            onValueChange = { value = ((it / step).roundToInt() * step).coerceIn(range.first, range.last) },
-            onValueChangeFinished = { onChange(value) },
-            valueRange = range.first.toFloat()..range.last.toFloat(),
-            steps = ((range.last - range.first) / step - 1).coerceAtLeast(0),
-        )
+        Text(label(value), color = Color.White, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center, modifier = Modifier.width(56.dp))
+        IconButton(onClick = { set(value + step) }, enabled = value < range.last) {
+            Icon(Icons.Rounded.Add, "More", tint = if (value < range.last) VdoColors.RoseGold else VdoColors.Muted)
+        }
     }
 }
 

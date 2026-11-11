@@ -185,7 +185,7 @@ class PlaybackService : MediaSessionService() {
     private fun save(id: String?, pos: Long, duration: Long) {
         if (id == null) return
         val nearEnd = duration > 0 && pos > duration - 5000
-        Store.setPosition(id, if (nearEnd) 0 else pos)
+        Store.setProgress(id, if (nearEnd) 0 else pos, duration)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo) = session

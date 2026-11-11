@@ -178,8 +178,6 @@ class PlayerActivity : ComponentActivity() {
 internal fun hasVideoTrack(p: Player): Boolean =
     p.currentTracks.groups.any { it.type == C.TRACK_TYPE_VIDEO && it.isSelected }
 
-private enum class Sheet { NONE, SPEED, AUDIO, SUBS, QUALITY, SLEEP, QUEUE }
-
 private enum class Drag { SEEK, VOLUME, BRIGHTNESS }
 
 @Composable
@@ -195,7 +193,7 @@ private fun PlayerScreen(activity: PlayerActivity, inPip: Boolean) {
     var locked by remember { mutableStateOf(false) }
     var sheet by remember { mutableStateOf(Sheet.NONE) }
     var resize by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
-    var scrub by remember { mutableStateOf<Float?>(null) }
+    var scrubbing by remember { mutableStateOf(false) }
     var hud by remember { mutableStateOf<Pair<ImageVector, String>?>(null) }
     var audioOnly by remember { mutableStateOf(PlayerHub.audioOnly) }
 
@@ -252,19 +250,83 @@ private fun PlayerScreen(activity: PlayerActivity, inPip: Boolean) {
     val buffering = c?.playbackState == Player.STATE_BUFFERING
     val duration = c?.duration?.takeIf { it > 0 } ?: 0L
     val meta = c?.mediaMetadata
-    val title = meta?.title?.toString().orEmpty()
     val isAudioItem = meta?.extras?.getBoolean("isAudio") == true
-    val showVideo = c != null && hasVideoTrack(c) && !audioOnly
+    // Until tracks are known, trust what the caller said the item is, so music never flashes a black video frame.
+    val tracksKnown = c != null && !c.currentTracks.isEmpty
+    val showVideo = !audioOnly && if (tracksKnown) hasVideoTrack(c!!) else !isAudioItem
     val seekStep = Store.seekSeconds * 1000L
 
-    // Keep the screen awake only while something is actually playing.
-    DisposableEffect(playing) {
-        if (playing) activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    fun setAudioOnly(on: Boolean) {
+        audioOnly = on
+        PlayerHub.audioOnly = on
+        c?.let { it.trackSelectionParameters = it.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, on).build() }
+    }
+
+    val ui = PlayerUi(
+        title = meta?.title?.toString().orEmpty(),
+        artist = meta?.artist?.toString().orEmpty().takeIf { it != "VDO" }.orEmpty(),
+        playing = playing, position = position, duration = duration,
+        hasPrev = c?.hasPreviousMediaItem() == true, hasNext = c?.hasNextMediaItem() == true,
+        queueSize = c?.mediaItemCount ?: 0,
+        speed = c?.playbackParameters?.speed ?: 1f,
+        resizeLabel = when (resize) {
+            AspectRatioFrameLayout.RESIZE_MODE_FILL -> "Stretch"
+            AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> "Crop"
+            else -> "Fit"
+        },
+        repeatMode = c?.repeatMode ?: Player.REPEAT_MODE_OFF,
+        shuffle = c?.shuffleModeEnabled == true,
+        sleepActive = SleepTimer.endsAt > 0,
+        audioOnly = audioOnly,
+    )
+    val actions = PlayerActions(
+        back = { activity.finish() },
+        playPause = {
+            c?.let {
+                if (it.playbackState == Player.STATE_ENDED) it.seekTo(0)
+                if (it.playbackState == Player.STATE_IDLE) it.prepare()
+                if (it.isPlaying) it.pause() else it.play()
+            }
+        },
+        seekBy = { dir -> c?.let { it.seekTo((it.currentPosition + dir * seekStep).coerceAtLeast(0)) } },
+        seekTo = { c?.seekTo(it) },
+        prev = { c?.seekToPrevious() },
+        next = { c?.seekToNextMediaItem() },
+        pip = { activity.enterPip() },
+        lock = { locked = true; controls = false },
+        cycleResize = {
+            resize = when (resize) {
+                AspectRatioFrameLayout.RESIZE_MODE_FIT -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+            }
+        },
+        rotate = {
+            val land = activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+            activity.requestedOrientation =
+                if (land) ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        },
+        cycleRepeat = {
+            c?.repeatMode = when (c?.repeatMode) {
+                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                else -> Player.REPEAT_MODE_OFF
+            }
+        },
+        toggleShuffle = { c?.let { it.shuffleModeEnabled = !it.shuffleModeEnabled } },
+        toggleAudioOnly = { setAudioOnly(!audioOnly) },
+        open = { sheet = it },
+        scrubbing = { scrubbing = it },
+    )
+
+    // Keep the screen awake only while a picture is actually playing.
+    DisposableEffect(playing, showVideo) {
+        if (playing && showVideo) activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         onDispose { activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
     }
     // Auto-hide the controls during video playback.
-    LaunchedEffect(controls, playing, sheet, scrub, showVideo) {
-        if (controls && playing && showVideo && sheet == Sheet.NONE && scrub == null) {
+    LaunchedEffect(controls, playing, sheet, scrubbing, showVideo) {
+        if (controls && playing && showVideo && sheet == Sheet.NONE && !scrubbing) {
             delay(3500)
             controls = false
         }
@@ -289,102 +351,123 @@ private fun PlayerScreen(activity: PlayerActivity, inPip: Boolean) {
                 view.resizeMode = resize
             },
         )
-
-        if (!showVideo && !inPip) AudioBackdrop(title, meta?.artist?.toString().orEmpty(), isAudioItem || audioOnly)
-
         if (inPip) return@Box
 
-        // --- Gesture layer -------------------------------------------------
-        var dragMode by remember { mutableStateOf<Drag?>(null) }
-        var dragStartPos by remember { mutableLongStateOf(0L) }
-        var dragAccum by remember { mutableFloatStateOf(0f) }
-        var dragTarget by remember { mutableLongStateOf(0L) }
-        var startLevel by remember { mutableFloatStateOf(0f) }
-        Box(
-            Modifier.fillMaxSize()
-                .pointerInput(locked, seekStep) {
-                    detectTapGestures(
-                        onTap = { controls = !controls },
-                        onDoubleTap = { o ->
-                            if (locked || c == null) return@detectTapGestures
-                            when {
-                                o.x < size.width * 0.35f -> {
-                                    c.seekTo((c.currentPosition - seekStep).coerceAtLeast(0))
-                                    hud = Icons.Rounded.FastRewind to "-${Store.seekSeconds}s"
+        if (!showVideo) {
+            AudioPlayerLayout(ui, actions)
+        } else {
+            // --- Gesture layer ---------------------------------------------
+            var dragMode by remember { mutableStateOf<Drag?>(null) }
+            var dragStartPos by remember { mutableLongStateOf(0L) }
+            var dragAccum by remember { mutableFloatStateOf(0f) }
+            var dragTarget by remember { mutableLongStateOf(0L) }
+            var startLevel by remember { mutableFloatStateOf(0f) }
+            Box(
+                Modifier.fillMaxSize()
+                    .pointerInput(locked, seekStep) {
+                        detectTapGestures(
+                            onTap = { controls = !controls },
+                            onDoubleTap = { o ->
+                                if (locked || c == null) return@detectTapGestures
+                                when {
+                                    o.x < size.width * 0.35f -> {
+                                        c.seekTo((c.currentPosition - seekStep).coerceAtLeast(0))
+                                        hud = Icons.Rounded.FastRewind to "-${Store.seekSeconds}s"
+                                    }
+                                    o.x > size.width * 0.65f -> {
+                                        c.seekTo(c.currentPosition + seekStep)
+                                        hud = Icons.Rounded.FastForward to "+${Store.seekSeconds}s"
+                                    }
+                                    else -> if (c.isPlaying) c.pause() else c.play()
                                 }
-                                o.x > size.width * 0.65f -> {
-                                    c.seekTo(c.currentPosition + seekStep)
-                                    hud = Icons.Rounded.FastForward to "+${Store.seekSeconds}s"
-                                }
-                                else -> if (c.isPlaying) c.pause() else c.play()
-                            }
-                        },
-                    )
-                }
-                .pointerInput(locked, showVideo) {
-                    if (locked || !Store.gestures) return@pointerInput
-                    var startX = 0f
-                    var ignore = false
-                    detectDragGestures(
-                        onDragStart = { o ->
-                            dragMode = null; dragAccum = 0f; startX = o.x
-                            // Leave the screen edges to the system's own gestures.
-                            ignore = o.y < size.height * 0.1f || o.y > size.height * 0.9f
-                            dragStartPos = c?.currentPosition ?: 0
-                        },
-                        onDragEnd = {
-                            if (dragMode == Drag.SEEK) c?.seekTo(dragTarget)
-                            dragMode = null
-                        },
-                        onDragCancel = { dragMode = null },
-                    ) { change, amount ->
-                        if (ignore || c == null) return@detectDragGestures
-                        change.consume()
-                        if (dragMode == null) {
-                            dragMode = when {
-                                abs(amount.x) > abs(amount.y) -> Drag.SEEK
-                                startX < size.width / 2f && showVideo -> Drag.BRIGHTNESS
-                                else -> Drag.VOLUME
-                            }
-                            startLevel = if (dragMode == Drag.VOLUME) {
-                                audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() /
-                                    audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                            } else {
-                                activity.window.attributes.screenBrightness.takeIf { it >= 0 } ?: 0.5f
-                            }
-                        }
-                        when (dragMode) {
-                            Drag.SEEK -> {
-                                dragAccum += amount.x
-                                // A full-width swipe scrubs about two minutes.
-                                val delta = (dragAccum / size.width * 120_000).toLong()
-                                val max = if (duration > 0) duration else Long.MAX_VALUE
-                                dragTarget = (dragStartPos + delta).coerceIn(0, max)
-                                val sign = if (delta >= 0) "+" else "-"
-                                hud = (if (delta >= 0) Icons.Rounded.FastForward else Icons.Rounded.FastRewind) to
-                                    "${formatTime(dragTarget)}  ($sign${formatTime(abs(delta))})"
-                            }
-                            Drag.VOLUME -> {
-                                dragAccum -= amount.y
-                                val level = (startLevel + dragAccum / (size.height * 0.7f)).coerceIn(0f, 1f)
-                                val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                                audio.setStreamVolume(AudioManager.STREAM_MUSIC, (level * max).roundToInt(), 0)
-                                hud = Icons.Rounded.VolumeUp to "${(level * 100).roundToInt()}%"
-                            }
-                            Drag.BRIGHTNESS -> {
-                                dragAccum -= amount.y
-                                val level = (startLevel + dragAccum / (size.height * 0.7f)).coerceIn(0.01f, 1f)
-                                activity.window.attributes = activity.window.attributes.apply { screenBrightness = level }
-                                hud = Icons.Rounded.BrightnessMedium to "${(level * 100).roundToInt()}%"
-                            }
-                            null -> {}
-                        }
+                            },
+                        )
                     }
-                },
-        )
+                    .pointerInput(locked) {
+                        if (locked || !Store.gestures) return@pointerInput
+                        var startX = 0f
+                        var ignore = false
+                        detectDragGestures(
+                            onDragStart = { o ->
+                                dragMode = null; dragAccum = 0f; startX = o.x
+                                // Leave the screen edges to the system's own gestures.
+                                ignore = o.y < size.height * 0.1f || o.y > size.height * 0.9f
+                                dragStartPos = c?.currentPosition ?: 0
+                            },
+                            onDragEnd = {
+                                if (dragMode == Drag.SEEK) c?.seekTo(dragTarget)
+                                dragMode = null
+                            },
+                            onDragCancel = { dragMode = null },
+                        ) { change, amount ->
+                            if (ignore || c == null) return@detectDragGestures
+                            change.consume()
+                            if (dragMode == null) {
+                                dragMode = when {
+                                    abs(amount.x) > abs(amount.y) -> Drag.SEEK
+                                    startX < size.width / 2f -> Drag.BRIGHTNESS
+                                    else -> Drag.VOLUME
+                                }
+                                startLevel = if (dragMode == Drag.VOLUME) {
+                                    audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() /
+                                        audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                                } else {
+                                    activity.window.attributes.screenBrightness.takeIf { it >= 0 } ?: 0.5f
+                                }
+                            }
+                            when (dragMode) {
+                                Drag.SEEK -> {
+                                    dragAccum += amount.x
+                                    // A full-width swipe scrubs about two minutes.
+                                    val delta = (dragAccum / size.width * 120_000).toLong()
+                                    val max = if (duration > 0) duration else Long.MAX_VALUE
+                                    dragTarget = (dragStartPos + delta).coerceIn(0, max)
+                                    val sign = if (delta >= 0) "+" else "-"
+                                    hud = (if (delta >= 0) Icons.Rounded.FastForward else Icons.Rounded.FastRewind) to
+                                        "${formatTime(dragTarget)}  ($sign${formatTime(abs(delta))})"
+                                }
+                                Drag.VOLUME -> {
+                                    dragAccum -= amount.y
+                                    val level = (startLevel + dragAccum / (size.height * 0.7f)).coerceIn(0f, 1f)
+                                    val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                                    audio.setStreamVolume(AudioManager.STREAM_MUSIC, (level * max).roundToInt(), 0)
+                                    hud = Icons.Rounded.VolumeUp to "${(level * 100).roundToInt()}%"
+                                }
+                                Drag.BRIGHTNESS -> {
+                                    dragAccum -= amount.y
+                                    val level = (startLevel + dragAccum / (size.height * 0.7f)).coerceIn(0.01f, 1f)
+                                    activity.window.attributes = activity.window.attributes.apply { screenBrightness = level }
+                                    hud = Icons.Rounded.BrightnessMedium to "${(level * 100).roundToInt()}%"
+                                }
+                                null -> {}
+                            }
+                        }
+                    },
+            )
+
+            if (locked) {
+                AnimatedVisibility(controls, Modifier.align(Alignment.CenterStart), enter = fadeIn(), exit = fadeOut()) {
+                    Row(
+                        Modifier.windowInsetsPadding(WindowInsets.safeDrawing).padding(16.dp).clip(RoundedCornerShape(50))
+                            .background(Color(0xCC0B1030)).clickable { locked = false; controls = true }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Rounded.Lock, null, tint = VdoColors.RoseGold)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Tap to unlock", color = Color.White)
+                    }
+                }
+            } else {
+                AnimatedVisibility(controls, enter = fadeIn(), exit = fadeOut()) { VideoControls(ui, actions) }
+            }
+        }
 
         if (buffering && error == null) {
-            CircularProgressIndicator(Modifier.align(Alignment.Center).size(56.dp), color = VdoColors.RoseGold)
+            CircularProgressIndicator(
+                Modifier.align(Alignment.Center).size(if (showVideo) 96.dp else 40.dp).padding(if (showVideo) 0.dp else 4.dp),
+                color = VdoColors.RoseGold, strokeWidth = 3.dp,
+            )
         }
 
         hud?.let { (icon, text) ->
@@ -402,181 +485,24 @@ private fun PlayerScreen(activity: PlayerActivity, inPip: Boolean) {
         error?.let { msg ->
             Column(
                 Modifier.align(Alignment.Center).padding(32.dp).clip(RoundedCornerShape(20.dp))
-                    .background(Color(0xE6151B45)).padding(24.dp),
+                    .background(Color(0xF2151B45)).padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text("Playback problem", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text("Can't play this", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                 Spacer(Modifier.height(8.dp))
                 Text(msg, color = VdoColors.Muted)
                 Spacer(Modifier.height(16.dp))
-                Text(
-                    "Try again", color = VdoColors.RoseGold, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.clip(RoundedCornerShape(50)).clickable { error = null; c?.prepare(); c?.play() }
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                )
-            }
-        }
-
-        // --- Lock button -----------------------------------------------------
-        if (locked) {
-            AnimatedVisibility(controls, Modifier.align(Alignment.CenterStart), enter = fadeIn(), exit = fadeOut()) {
-                Box(Modifier.windowInsetsPadding(WindowInsets.safeDrawing).padding(16.dp)) {
-                    RoundIcon(Icons.Rounded.Lock, "Unlock controls") { locked = false; controls = true }
-                }
-            }
-            return@Box
-        }
-
-        // --- Controls --------------------------------------------------------
-        AnimatedVisibility(controls || !showVideo, enter = fadeIn(), exit = fadeOut()) {
-            Box(
-                Modifier.fillMaxSize().background(
-                    if (showVideo) Brush.verticalGradient(
-                        0f to Color(0xB3000000), 0.3f to Color.Transparent,
-                        0.6f to Color.Transparent, 1f to Color(0xD9000000),
-                    ) else Brush.verticalGradient(listOf(Color.Transparent, Color.Transparent)),
-                ).windowInsetsPadding(WindowInsets.safeDrawing),
-            ) {
-                // Top bar
-                Row(
-                    Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(onClick = { activity.finish() }) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = Color.White)
-                    }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+                        "Close", color = VdoColors.Muted,
+                        modifier = Modifier.clip(RoundedCornerShape(50)).clickable { activity.finish() }
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
                     )
-                    if ((c?.mediaItemCount ?: 0) > 1) {
-                        IconButton(onClick = { sheet = Sheet.QUEUE }) {
-                            Icon(Icons.AutoMirrored.Rounded.QueueMusic, "Queue", tint = Color.White)
-                        }
-                    }
-                    if (showVideo) {
-                        IconButton(onClick = { activity.enterPip() }) {
-                            Icon(Icons.Rounded.PictureInPictureAlt, "Picture in picture", tint = Color.White)
-                        }
-                    }
-                }
-
-                // Centre transport
-                Row(
-                    Modifier.align(if (showVideo) Alignment.Center else Alignment.BottomCenter)
-                        .padding(bottom = if (showVideo) 0.dp else 168.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(18.dp),
-                ) {
-                    RoundIcon(Icons.Rounded.SkipPrevious, "Previous", enabled = c?.hasPreviousMediaItem() == true) {
-                        c?.seekToPreviousMediaItem()
-                    }
-                    RoundIcon(Icons.Rounded.FastRewind, "Rewind") {
-                        c?.let { it.seekTo((it.currentPosition - seekStep).coerceAtLeast(0)) }
-                    }
-                    Box(
-                        Modifier.size(76.dp).clip(CircleShape).background(VdoColors.Accent)
-                            .border(1.5.dp, VdoColors.RoseGold.copy(alpha = 0.8f), CircleShape)
-                            .clickable {
-                                c?.let {
-                                    if (it.playbackState == Player.STATE_ENDED) it.seekTo(0)
-                                    if (it.isPlaying) it.pause() else it.play()
-                                }
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            if (playing) "Pause" else "Play", tint = Color.White, modifier = Modifier.size(44.dp),
-                        )
-                    }
-                    RoundIcon(Icons.Rounded.FastForward, "Forward") { c?.let { it.seekTo(it.currentPosition + seekStep) } }
-                    RoundIcon(Icons.Rounded.SkipNext, "Next", enabled = c?.hasNextMediaItem() == true) {
-                        c?.seekToNextMediaItem()
-                    }
-                }
-
-                // Bottom: seek bar + tools
-                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 12.dp)) {
-                    val shown = scrub?.let { (it * duration).toLong() } ?: position
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(formatTime(shown), color = Color.White, fontSize = 12.sp)
-                        Slider(
-                            value = scrub ?: if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f,
-                            onValueChange = { scrub = it },
-                            onValueChangeFinished = {
-                                scrub?.let { c?.seekTo((it * duration).toLong()) }
-                                scrub = null
-                            },
-                            enabled = duration > 0,
-                            colors = SliderDefaults.colors(
-                                thumbColor = VdoColors.RoseGold, activeTrackColor = VdoColors.Violet,
-                                inactiveTrackColor = Color(0x55FFFFFF),
-                            ),
-                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                        )
-                        Text(if (duration > 0) formatTime(duration) else "LIVE", color = Color.White, fontSize = 12.sp)
-                    }
-                    Row(
-                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                    ) {
-                        if (showVideo) Tool(Icons.Rounded.LockOpen, "Lock") { locked = true; controls = false }
-                        val speed = c?.playbackParameters?.speed ?: 1f
-                        Tool(Icons.Rounded.Speed, if (speed == 1f) "Speed" else "${speed}x") { sheet = Sheet.SPEED }
-                        if (showVideo) {
-                            Tool(
-                                Icons.Rounded.AspectRatio,
-                                when (resize) {
-                                    AspectRatioFrameLayout.RESIZE_MODE_FILL -> "Stretch"
-                                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> "Crop"
-                                    else -> "Fit"
-                                },
-                            ) {
-                                resize = when (resize) {
-                                    AspectRatioFrameLayout.RESIZE_MODE_FIT -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                    AspectRatioFrameLayout.RESIZE_MODE_ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_FILL
-                                    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                }
-                            }
-                            Tool(Icons.Rounded.ScreenRotation, "Rotate") {
-                                val land = activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-                                activity.requestedOrientation =
-                                    if (land) ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-                                    else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                            }
-                            Tool(Icons.Rounded.HighQuality, "Quality") { sheet = Sheet.QUALITY }
-                            Tool(Icons.Rounded.Subtitles, "Subtitles") { sheet = Sheet.SUBS }
-                        }
-                        Tool(Icons.Rounded.Audiotrack, "Audio") { sheet = Sheet.AUDIO }
-                        if (!isAudioItem) {
-                            Tool(Icons.Rounded.Headphones, if (audioOnly) "Video" else "As audio", active = audioOnly) {
-                                audioOnly = !audioOnly
-                                PlayerHub.audioOnly = audioOnly
-                                c?.let {
-                                    it.trackSelectionParameters = it.trackSelectionParameters.buildUpon()
-                                        .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, audioOnly).build()
-                                }
-                            }
-                        }
-                        val repeat = c?.repeatMode ?: Player.REPEAT_MODE_OFF
-                        Tool(
-                            if (repeat == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
-                            "Repeat", active = repeat != Player.REPEAT_MODE_OFF,
-                        ) {
-                            c?.repeatMode = when (repeat) {
-                                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-                                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-                                else -> Player.REPEAT_MODE_OFF
-                            }
-                        }
-                        if ((c?.mediaItemCount ?: 0) > 1) {
-                            Tool(Icons.Rounded.Shuffle, "Shuffle", active = c?.shuffleModeEnabled == true) {
-                                c?.let { it.shuffleModeEnabled = !it.shuffleModeEnabled }
-                            }
-                        }
-                        Tool(Icons.Rounded.Timer, "Sleep", active = SleepTimer.endsAt > 0) { sheet = Sheet.SLEEP }
-                    }
+                    Text(
+                        "Try again", color = VdoColors.RoseGold, fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.clip(RoundedCornerShape(50)).clickable { error = null; c?.prepare(); c?.play() }
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
                 }
             }
         }
@@ -586,6 +512,30 @@ private fun PlayerScreen(activity: PlayerActivity, inPip: Boolean) {
         ModalBottomSheet(onDismissRequest = { sheet = Sheet.NONE }, containerColor = VdoColors.Surface) {
             val close = { sheet = Sheet.NONE }
             when (sheet) {
+                Sheet.MORE -> {
+                    SheetTitle("Options")
+                    if (showVideo) {
+                        MoreRow(Icons.Rounded.HighQuality, "Video quality") { sheet = Sheet.QUALITY }
+                        MoreRow(Icons.Rounded.Subtitles, "Subtitles") { sheet = Sheet.SUBS }
+                    }
+                    MoreRow(Icons.Rounded.Audiotrack, "Audio track") { sheet = Sheet.AUDIO }
+                    MoreRow(Icons.Rounded.Speed, "Playback speed", if (ui.speed == 1f) "Normal" else "${ui.speed}x") { sheet = Sheet.SPEED }
+                    if (!isAudioItem) {
+                        MoreRow(
+                            Icons.Rounded.Headphones, if (audioOnly) "Show the video again" else "Play as audio",
+                            if (audioOnly) null else "Keeps playing with the screen off",
+                        ) { setAudioOnly(!audioOnly); close() }
+                    }
+                    if (showVideo) {
+                        MoreRow(
+                            if (ui.repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat, "Repeat",
+                            when (ui.repeatMode) { Player.REPEAT_MODE_ONE -> "This one"; Player.REPEAT_MODE_ALL -> "All"; else -> "Off" },
+                            onClick = actions.cycleRepeat,
+                        )
+                        if (ui.queueSize > 1) MoreRow(Icons.Rounded.Shuffle, "Shuffle", if (ui.shuffle) "On" else "Off", onClick = actions.toggleShuffle)
+                    }
+                    MoreRow(Icons.Rounded.Timer, "Sleep timer", if (ui.sleepActive) "On" else "Off") { sheet = Sheet.SLEEP }
+                }
                 Sheet.SPEED -> {
                     SheetTitle("Playback speed")
                     val current = c.playbackParameters.speed
@@ -622,46 +572,15 @@ private fun PlayerScreen(activity: PlayerActivity, inPip: Boolean) {
 }
 
 @Composable
-private fun AudioBackdrop(title: String, artist: String, audio: Boolean) {
-    Box(Modifier.fillMaxSize().background(VdoColors.Background), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(bottom = 220.dp)) {
-            Image(
-                painterResource(R.drawable.vdo_icon), null, contentScale = ContentScale.Crop,
-                modifier = Modifier.size(220.dp).clip(RoundedCornerShape(36.dp))
-                    .border(1.dp, VdoColors.RoseGold.copy(alpha = 0.5f), RoundedCornerShape(36.dp)),
-            )
-            if (audio) {
-                Spacer(Modifier.height(24.dp))
-                Text(
-                    title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp, maxLines = 2,
-                    overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 32.dp),
-                )
-                if (artist.isNotBlank()) Text(artist, color = VdoColors.Muted, modifier = Modifier.padding(top = 4.dp))
-            }
-        }
-    }
-}
-
-@Composable
-private fun RoundIcon(icon: ImageVector, label: String, enabled: Boolean = true, onClick: () -> Unit) {
-    Box(
-        Modifier.size(48.dp).clip(CircleShape).background(Color(0x66000000))
-            .clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center,
+private fun MoreRow(icon: ImageVector, label: String, value: String? = null, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 24.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(icon, label, tint = if (enabled) Color.White else Color(0x55FFFFFF), modifier = Modifier.size(28.dp))
-    }
-}
-
-@Composable
-private fun Tool(icon: ImageVector, label: String, active: Boolean = false, onClick: () -> Unit) {
-    val tint = if (active) VdoColors.RoseGold else Color.White
-    Column(
-        Modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 6.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Icon(icon, label, tint = tint, modifier = Modifier.size(22.dp))
-        Text(label, color = tint, fontSize = 10.sp, maxLines = 1)
+        Icon(icon, null, tint = VdoColors.RoseGold, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(18.dp))
+        Text(label, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
+        if (value != null) Text(value, color = VdoColors.Muted, fontSize = 13.sp)
     }
 }
 

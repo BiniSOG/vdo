@@ -3,7 +3,17 @@ package com.vdo.app.ui
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material3.LinearProgressIndicator
+import com.vdo.app.data.DlStatus
+import com.vdo.app.data.DownloadTask
+import com.vdo.app.download.Exporter
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -110,6 +120,7 @@ fun HomeScreen() {
     var downloadFor by remember { mutableStateOf<String?>(null) }
     val incoming by AppBus.incomingUrl.collectAsState()
     val recents by Store.recents.collectAsState()
+    val tasks by Downloads.tasks.collectAsState()
 
     LaunchedEffect(incoming) {
         incoming?.let { url = it; AppBus.incomingUrl.value = null }
@@ -136,119 +147,206 @@ fun HomeScreen() {
         }
     }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-        Image(
-            painterResource(R.drawable.vdo_logo), "VDO — Play · Stream · Download", contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxWidth().aspectRatio(2.1f).clip(RoundedCornerShape(24.dp))
-                .border(1.dp, VdoColors.RoseGold.copy(alpha = 0.25f), RoundedCornerShape(24.dp)),
-        )
-        Spacer(Modifier.height(20.dp))
-
-        Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(VdoColors.Surface).padding(16.dp),
-        ) {
-            Text("Play or download from a link", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Color.White)
-            Text(
-                "Paste a video, audio or stream link (MP4, MP3, M3U8, MPD…) or a web page address.",
-                color = VdoColors.Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp, bottom = 12.dp),
-            )
-            OutlinedTextField(
-                value = url,
-                onValueChange = { url = it },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                placeholder = { Text("https://…") },
-                leadingIcon = { Icon(Icons.Rounded.Link, null) },
-                trailingIcon = {
-                    if (url.isNotEmpty()) {
-                        IconButton(onClick = { url = "" }) { Icon(Icons.Rounded.Close, "Clear") }
-                    } else {
-                        IconButton(onClick = {
-                            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            val text = cm.primaryClip?.getItemAt(0)?.coerceToText(ctx)?.toString().orEmpty()
-                            if (text.isBlank()) toast("Clipboard is empty") else url = text.trim()
-                        }) { Icon(Icons.Rounded.ContentPaste, "Paste") }
-                    }
-                },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
-                keyboardActions = KeyboardActions(onGo = { play() }),
-                shape = RoundedCornerShape(16.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = VdoColors.Violet, unfocusedBorderColor = Color(0xFF3A4288),
-                ),
-            )
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(
-                    onClick = { play() }, enabled = !busy, modifier = Modifier.weight(1f).height(50.dp),
-                    shape = RoundedCornerShape(16.dp),
-                ) {
-                    if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
-                    else { Icon(Icons.Rounded.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text("Play") }
-                }
-                OutlinedButton(
-                    onClick = {
-                        val u = normalizeUrl(url)
-                        if (u == null) toast("Enter a valid link first") else downloadFor = u
-                    },
-                    modifier = Modifier.weight(1f).height(50.dp), shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = VdoColors.RoseGold),
-                ) { Icon(Icons.Rounded.Download, null); Spacer(Modifier.width(6.dp)); Text("Download") }
-            }
-        }
-
-        Spacer(Modifier.height(20.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Shortcut(Icons.Rounded.Public, "Browser", Modifier.weight(1f)) { AppBus.tab.value = Tab.BROWSER }
-            Shortcut(Icons.Rounded.VideoLibrary, "Library", Modifier.weight(1f)) { AppBus.tab.value = Tab.LIBRARY }
-            Shortcut(Icons.Rounded.Download, "Downloads", Modifier.weight(1f)) { AppBus.tab.value = Tab.DOWNLOADS }
-        }
-
-        if (recents.isNotEmpty()) {
-            Spacer(Modifier.height(24.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Recently played", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Color.White, modifier = Modifier.weight(1f))
-                TextButton(onClick = { Store.clearRecents() }) { Text("Clear", color = VdoColors.Muted) }
-            }
-            recents.take(8).forEach { item ->
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
-                        .clickable { PlayerHub.play(ctx, listOf(item)) }.padding(vertical = 8.dp, horizontal = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(
-                        Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(VdoColors.SurfaceHigh),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(if (item.isAudio) Icons.Rounded.MusicNote else Icons.Rounded.PlayArrow, null, tint = VdoColors.RoseGold)
-                    }
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(item.title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        val pos = Store.position(item.uri)
-                        Text(
-                            if (pos > 0) "Resume at ${formatTime(pos)}" else item.subtitle.ifBlank { "Tap to play" },
-                            color = VdoColors.Muted, fontSize = 12.sp, maxLines = 1,
-                        )
-                    }
-                }
-            }
-        }
-    }
+    HomeContent(
+        url = url, onUrl = { url = it }, busy = busy,
+        recents = recents, tasks = tasks,
+        onPlay = { play() },
+        onDownload = {
+            val u = normalizeUrl(url)
+            if (u == null) toast("Enter a valid link first") else downloadFor = u
+        },
+        onPaste = {
+            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val text = cm.primaryClip?.getItemAt(0)?.coerceToText(ctx)?.toString().orEmpty()
+            if (text.isBlank()) toast("Clipboard is empty") else url = text.trim()
+        },
+        onOpenItem = { PlayerHub.play(ctx, listOf(it)) },
+        onOpenDownload = { t ->
+            t.output?.let { PlayerHub.play(ctx, listOf(PlayItem(Exporter.playUri(it), t.title, "Downloaded", t.isAudio))) }
+        },
+    )
 
     downloadFor?.let { u -> DownloadSheet(u, emptyMap(), null) { downloadFor = null } }
 }
 
 @Composable
-private fun Shortcut(icon: ImageVector, label: String, modifier: Modifier, onClick: () -> Unit) {
-    Column(
-        modifier.clip(RoundedCornerShape(20.dp)).background(VdoColors.Surface).clickable(onClick = onClick)
-            .padding(vertical = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Icon(icon, null, tint = VdoColors.RoseGold, modifier = Modifier.size(28.dp))
-        Spacer(Modifier.height(6.dp))
-        Text(label, color = Color.White, fontSize = 13.sp)
+fun HomeContent(
+    url: String, onUrl: (String) -> Unit, busy: Boolean,
+    recents: List<PlayItem>, tasks: List<DownloadTask>,
+    onPlay: () -> Unit, onDownload: () -> Unit, onPaste: () -> Unit,
+    onOpenItem: (PlayItem) -> Unit, onOpenDownload: (DownloadTask) -> Unit,
+) {
+    val active = tasks.filter { it.active || it.status == DlStatus.QUEUED }
+    val finished = tasks.filter { it.finished && !it.isPrivate }.take(3)
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+        // Brand banner with settings in the corner
+        Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp)) {
+            Image(
+                painterResource(R.drawable.vdo_logo), "VDO — Play · Stream · Download", contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxWidth().aspectRatio(2.7f).clip(RoundedCornerShape(24.dp))
+                    .border(1.dp, VdoColors.RoseGold.copy(alpha = 0.22f), RoundedCornerShape(24.dp)),
+            )
+            IconButton(
+                onClick = { AppBus.settingsOpen.value = true },
+                modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).clip(RoundedCornerShape(50)).background(Color(0x66000000)),
+            ) { Icon(Icons.Rounded.Settings, "Settings", tint = Color.White) }
+        }
+
+        // The main job of this screen: a link in, play or download out.
+        Column(
+            Modifier.padding(16.dp).fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(VdoColors.Surface).padding(16.dp),
+        ) {
+            Text("Paste a link", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White)
+            Text(
+                "A video, music or stream address — or any web page with a video on it.",
+                color = VdoColors.Muted, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 2.dp, bottom = 12.dp),
+            )
+            OutlinedTextField(
+                value = url,
+                onValueChange = onUrl,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                placeholder = { Text("https://…") },
+                leadingIcon = { Icon(Icons.Rounded.Link, null) },
+                trailingIcon = {
+                    if (url.isNotEmpty()) IconButton(onClick = { onUrl("") }) { Icon(Icons.Rounded.Close, "Clear") }
+                    else TextButton(onClick = onPaste, modifier = Modifier.padding(end = 4.dp)) { Text("Paste", color = VdoColors.RoseGold) }
+                },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
+                keyboardActions = KeyboardActions(onGo = { onPlay() }),
+                shape = RoundedCornerShape(16.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = VdoColors.Violet, unfocusedBorderColor = Color(0xFF3A4288),
+                    focusedContainerColor = Color(0xFF10163F), unfocusedContainerColor = Color(0xFF10163F),
+                ),
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(
+                    onClick = onPlay, enabled = !busy, modifier = Modifier.weight(1f).height(52.dp),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
+                    else { Icon(Icons.Rounded.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text("Play", fontSize = 16.sp) }
+                }
+                OutlinedButton(
+                    onClick = onDownload, modifier = Modifier.weight(1f).height(52.dp), shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, VdoColors.RoseGold.copy(alpha = 0.6f)),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = VdoColors.RoseGold),
+                ) { Icon(Icons.Rounded.Download, null); Spacer(Modifier.width(6.dp)); Text("Download", fontSize = 16.sp) }
+            }
+        }
+
+        // Downloads in flight, so progress is visible without leaving Home.
+        if (active.isNotEmpty()) {
+            val t = active.first()
+            Row(
+                Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(VdoColors.Surface)
+                    .clickable { AppBus.tab.value = Tab.DOWNLOADS }.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.Download, null, tint = VdoColors.RoseGold)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (active.size == 1) t.title else "Downloading ${active.size} files",
+                        color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    val f = active.map { it.fraction }.filter { it >= 0 }.average().toFloat()
+                    if (f.isNaN()) LinearProgressIndicator(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)), color = VdoColors.Violet, trackColor = VdoColors.SurfaceHigh)
+                    else LinearProgressIndicator(progress = { f }, modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)), color = VdoColors.Violet, trackColor = VdoColors.SurfaceHigh)
+                }
+                Icon(Icons.Rounded.ChevronRight, null, tint = VdoColors.Muted)
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+
+        if (recents.isNotEmpty()) {
+            SectionTitle("Continue watching") {
+                TextButton(onClick = { Store.clearRecents() }) { Text("Clear", color = VdoColors.Muted) }
+            }
+            LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(recents.take(12), key = { it.uri }) { item ->
+                    Column(Modifier.width(168.dp).clip(RoundedCornerShape(16.dp)).clickable { onOpenItem(item) }) {
+                        Thumb(
+                            if (item.isAudio) item.artwork else item.uri.takeIf { it.startsWith("content") || it.startsWith("file") },
+                            if (item.isAudio) Icons.Rounded.MusicNote else Icons.Rounded.PlayArrow,
+                            Modifier.fillMaxWidth().aspectRatio(16f / 9f), watched = Store.watched(item.uri),
+                        )
+                        Text(
+                            item.title, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(start = 4.dp, top = 6.dp),
+                        )
+                        val pos = Store.position(item.uri)
+                        Text(
+                            if (pos > 0) "Resume at ${formatTime(pos)}" else item.subtitle.ifBlank { "Play again" },
+                            color = VdoColors.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(20.dp))
+        }
+
+        if (finished.isNotEmpty()) {
+            SectionTitle("Latest downloads") {
+                TextButton(onClick = { AppBus.tab.value = Tab.DOWNLOADS }) { Text("See all", color = VdoColors.RoseGold) }
+            }
+            finished.forEach { t ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { onOpenDownload(t) }.padding(horizontal = 16.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Thumb(
+                        if (t.isAudio) null else t.output?.let(Exporter::playUri),
+                        if (t.isAudio) Icons.Rounded.MusicNote else Icons.Rounded.PlayArrow,
+                        Modifier.width(96.dp).height(56.dp), corner = 12.dp,
+                    )
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(t.title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(formatSize(t.total), color = VdoColors.Muted, fontSize = 13.sp)
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+
+        // First-run guidance: shown until the user has something of their own on this screen.
+        if (recents.isEmpty() && finished.isEmpty()) {
+            SectionTitle("How to save a video from a website")
+            Column(
+                Modifier.padding(horizontal = 16.dp, vertical = 10.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp))
+                    .background(VdoColors.Surface).padding(vertical = 8.dp),
+            ) {
+                Step(1, "Open the page", "Use the Browser tab, or paste the page address above.")
+                Step(2, "Start the video", "VDO spots the video as soon as it begins to play.")
+                Step(3, "Tap the download button", "Pick a quality — it is saved to your gallery.")
+            }
+            TextButton(onClick = { AppBus.tab.value = Tab.BROWSER }, modifier = Modifier.padding(horizontal = 12.dp)) {
+                Icon(Icons.Rounded.Public, null, tint = VdoColors.RoseGold)
+                Spacer(Modifier.width(8.dp))
+                Text("Open the browser", color = VdoColors.RoseGold)
+            }
+        }
+    }
+}
+
+@Composable
+fun Step(number: Int, title: String, body: String) {
+    Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier.size(32.dp).clip(RoundedCornerShape(50)).background(VdoColors.SurfaceHigh),
+            contentAlignment = Alignment.Center,
+        ) { Text("$number", color = VdoColors.RoseGold, fontWeight = FontWeight.Bold) }
+        Spacer(Modifier.width(14.dp))
+        Column {
+            Text(title, color = Color.White, fontWeight = FontWeight.SemiBold)
+            Text(body, color = VdoColors.Muted, fontSize = 13.sp, lineHeight = 18.sp)
+        }
     }
 }
 

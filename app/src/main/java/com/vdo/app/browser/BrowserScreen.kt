@@ -236,6 +236,9 @@ class BrowserHolder(private val activity: Activity) {
     var fullscreen by mutableStateOf<View?>(null)
     var blockedNotice by mutableStateOf(false)
     var drmNotice by mutableStateOf(false)
+
+    /** True while the start page (bookmarks + how-to) is shown instead of a web page. */
+    var showStart by mutableStateOf(true)
     val detected = mutableStateListOf<Detected>()
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
     private var created = false
@@ -286,13 +289,14 @@ class BrowserHolder(private val activity: Activity) {
 
     fun load(input: String) {
         val target = normalizeUrl(input) ?: (Store.searchEngine + URLEncoder.encode(input.trim(), "UTF-8"))
+        showStart = false
         webView.loadUrl(target)
     }
 
     fun goBack(): Boolean {
         if (fullscreen != null) { exitFullscreen(); return true }
-        if (!created || !webView.canGoBack()) return false
-        webView.goBack()
+        if (showStart) return false
+        if (created && webView.canGoBack()) webView.goBack() else showStart = true
         return true
     }
 
@@ -442,9 +446,9 @@ fun BrowserScreen(holder: BrowserHolder) {
     LaunchedEffect(pendingUrl) {
         val p = pendingUrl
         if (p != null) { holder.load(p); AppBus.browserUrl.value = null }
-        else if (holder.url.isEmpty()) holder.load(Store.homePage)
     }
-    LaunchedEffect(holder.url) { if (!editing) address = holder.url }
+    val shownUrl = if (holder.showStart) "" else holder.url
+    LaunchedEffect(shownUrl) { if (!editing) address = shownUrl }
 
     holder.fullscreen?.let { view ->
         BackHandler { holder.exitFullscreen() }
@@ -486,7 +490,7 @@ fun BrowserScreen(holder: BrowserHolder) {
                         }),
                         modifier = Modifier.weight(1f).onFocusChanged {
                             editing = it.isFocused
-                            if (!it.isFocused) address = holder.url
+                            if (!it.isFocused) address = shownUrl
                         },
                         decorationBox = { inner ->
                             if (address.isEmpty()) Text("Search or type a web address", color = VdoColors.Muted, fontSize = 14.sp)
@@ -495,12 +499,12 @@ fun BrowserScreen(holder: BrowserHolder) {
                     )
                     if (editing && address.isNotEmpty()) {
                         Icon(Icons.Rounded.Close, "Clear", tint = VdoColors.Muted, modifier = Modifier.size(18.dp).clickable { address = "" })
-                    } else if (!editing) {
+                    } else if (!editing && !holder.showStart) {
                         Icon(Icons.Rounded.Refresh, "Reload", tint = VdoColors.Muted, modifier = Modifier.size(18.dp).clickable { holder.webView.reload() })
                     }
                 }
-                val marked = bookmarks.any { it.url == holder.url }
-                IconButton(onClick = { if (holder.url.isNotBlank()) Store.toggleBookmark(holder.url, holder.title) }) {
+                val marked = !holder.showStart && bookmarks.any { it.url == holder.url }
+                IconButton(enabled = !holder.showStart, onClick = { if (holder.url.isNotBlank()) Store.toggleBookmark(holder.url, holder.title) }) {
                     Icon(
                         if (marked) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Bookmark",
                         tint = if (marked) VdoColors.RoseGold else Color.White,
@@ -524,45 +528,52 @@ fun BrowserScreen(holder: BrowserHolder) {
                     }
                 }
             }
-            if (holder.progress < 100) {
+            if (holder.progress < 100 && !holder.showStart) {
                 LinearProgressIndicator(
                     progress = { holder.progress / 100f }, modifier = Modifier.fillMaxWidth().height(2.dp),
                     color = VdoColors.RoseGold, trackColor = Color.Transparent,
                 )
             }
 
-            AndroidView(
-                factory = {
-                    holder.webView.also { (it.parent as? ViewGroup)?.removeView(it) }
-                },
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-            )
+            if (holder.showStart) {
+                BrowserStart(bookmarks, history, Modifier.weight(1f)) { holder.load(it) }
+            } else {
+                AndroidView(
+                    factory = {
+                        holder.webView.also { (it.parent as? ViewGroup)?.removeView(it) }
+                    },
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+            }
 
             // Navigation row
             Row(Modifier.fillMaxWidth().background(Color(0xFF0D1236)), verticalAlignment = Alignment.CenterVertically) {
-                NavButton(Modifier.weight(1f), holder.canGoBack, { holder.webView.goBack() }) {
+                NavButton(Modifier.weight(1f), !holder.showStart, { holder.goBack() }) {
                     Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back")
                 }
-                NavButton(Modifier.weight(1f), holder.canGoForward, { holder.webView.goForward() }) {
+                NavButton(Modifier.weight(1f), !holder.showStart && holder.canGoForward, { holder.webView.goForward() }) {
                     Icon(Icons.AutoMirrored.Rounded.ArrowForward, "Forward")
                 }
-                NavButton(Modifier.weight(1f), true, { holder.load(Store.homePage) }) { Icon(Icons.Rounded.Home, "Home page") }
+                NavButton(Modifier.weight(1f), !holder.showStart, { holder.showStart = true }) { Icon(Icons.Rounded.Home, "Start page") }
                 NavButton(Modifier.weight(1f), true, { panel = Panel.HISTORY }) { Icon(Icons.Rounded.History, "History") }
-                NavButton(Modifier.weight(1f), holder.detected.isNotEmpty(), { panel = Panel.MEDIA }) {
-                    BadgedBox(badge = { if (holder.detected.isNotEmpty()) Badge { Text("${holder.detected.size}") } }) {
+                val found = if (holder.showStart) 0 else holder.detected.size
+                NavButton(Modifier.weight(1f), found > 0, { panel = Panel.MEDIA }) {
+                    BadgedBox(badge = { if (found > 0) Badge { Text("$found") } }) {
                         Icon(Icons.Rounded.Download, "Detected media")
                     }
                 }
             }
         }
 
-        if (holder.detected.isNotEmpty() && panel == Panel.NONE) {
+        if (holder.showStart) {
+            // Nothing floats over the start page.
+        } else if (holder.detected.isNotEmpty() && panel == Panel.NONE) {
             ExtendedFloatingActionButton(
                 onClick = { panel = Panel.MEDIA },
                 containerColor = VdoColors.Violet, contentColor = Color.White,
                 modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 64.dp),
                 icon = { Icon(Icons.Rounded.Download, null) },
-                text = { Text("${holder.detected.size} found") },
+                text = { Text(if (holder.detected.size == 1) "Download video" else "${holder.detected.size} videos found") },
             )
         } else if (holder.blockedNotice || holder.drmNotice) {
             Text(
@@ -652,6 +663,57 @@ private fun EntryList(title: String, entries: List<WebEntry>, empty: String, onC
                 Text(e.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(e.url, color = VdoColors.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
+        }
+    }
+}
+
+
+/** What the browser shows before any page is open: how downloading works, then saved and recent pages. */
+@Composable
+fun BrowserStart(bookmarks: List<WebEntry>, history: List<WebEntry>, modifier: Modifier = Modifier, onOpen: (String) -> Unit) {
+    LazyColumn(modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)) {
+        item {
+            Column(
+                Modifier.padding(16.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(VdoColors.Surface)
+                    .padding(vertical = 12.dp),
+            ) {
+                Text(
+                    "Save videos while you browse", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+                com.vdo.app.ui.Step(1, "Go to a page", "Type an address or search in the bar above.")
+                com.vdo.app.ui.Step(2, "Play the video", "VDO finds it as soon as it starts.")
+                com.vdo.app.ui.Step(3, "Tap the download button", "It appears in the corner when a video is found.")
+            }
+        }
+        if (bookmarks.isNotEmpty()) {
+            item { com.vdo.app.ui.SectionTitle("Bookmarks", Modifier.padding(top = 4.dp, bottom = 4.dp)) }
+            items(bookmarks.take(12)) { e -> EntryRow(e, Icons.Rounded.Bookmark, onOpen) }
+        }
+        if (history.isNotEmpty()) {
+            item { com.vdo.app.ui.SectionTitle("Recently visited", Modifier.padding(top = 12.dp, bottom = 4.dp)) }
+            items(history.take(8)) { e -> EntryRow(e, Icons.Rounded.History, onOpen) }
+        }
+    }
+}
+
+@Composable
+private fun EntryRow(e: WebEntry, icon: androidx.compose.ui.graphics.vector.ImageVector, onOpen: (String) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable { onOpen(e.url) }.padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(VdoColors.Surface),
+            contentAlignment = Alignment.Center,
+        ) { Icon(icon, null, tint = VdoColors.RoseGold, modifier = Modifier.size(20.dp)) }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(e.title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                e.url.substringAfter("://").substringBefore('/').removePrefix("www."),
+                color = VdoColors.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

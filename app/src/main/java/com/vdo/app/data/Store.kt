@@ -24,6 +24,9 @@ object Store {
     var seekSeconds by int("seek_seconds", 10)
     var gestures by bool("gestures", true)
 
+    // Library
+    var videoGrid by bool("video_grid", true)
+
     // Downloads
     var maxConcurrent by int("max_concurrent", 3)
     var threads by int("threads", 6)
@@ -57,6 +60,20 @@ object Store {
     // --- Playback positions -------------------------------------------------
     fun position(id: String): Long = sp.getLong("pos_" + id.hashCode(), 0)
     fun setPosition(id: String, ms: Long) = sp.edit().putLong("pos_" + id.hashCode(), ms).apply()
+
+    /** Remembers position and length together so lists can draw a "watched" bar. */
+    fun setProgress(id: String, ms: Long, durationMs: Long) {
+        val e = sp.edit().putLong("pos_" + id.hashCode(), ms)
+        if (durationMs > 0) e.putLong("dur_" + id.hashCode(), durationMs)
+        e.apply()
+    }
+
+    /** How much of an item has been watched, 0..1 (0 when unknown or finished). */
+    fun watched(id: String): Float {
+        if (!::sp.isInitialized) return 0f
+        val d = sp.getLong("dur_" + id.hashCode(), 0)
+        return if (d <= 0) 0f else (position(id).toFloat() / d).coerceIn(0f, 1f)
+    }
 
     // --- Lists --------------------------------------------------------------
     fun addRecent(item: PlayItem) {

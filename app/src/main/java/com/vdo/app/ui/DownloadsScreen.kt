@@ -100,8 +100,7 @@ fun DownloadsScreen() {
     }
 
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Downloads", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White, modifier = Modifier.weight(1f))
+        ScreenTitle("Downloads") {
             if (tab == 0 && inProgress.isNotEmpty()) {
                 val anyActive = inProgress.any { it.active || it.status == DlStatus.QUEUED }
                 TextButton(onClick = { if (anyActive) Downloads.pauseAll() else Downloads.resumeAll() }) {
@@ -184,9 +183,9 @@ private fun ActiveCard(t: DownloadTask, onCancel: () -> Unit) {
                         append(formatSize(t.downloaded))
                         if (t.total > 0) append(" / ${formatSize(t.total)}")
                         append(" · ${formatSize(t.speed)}/s")
-                        if (t.kind != com.vdo.app.data.DlKind.DIRECT && t.partsTotal > 0) append(" · ${t.partsDone}/${t.partsTotal} segments")
+                        t.fraction.takeIf { it >= 0 }?.let { append(" · ${(it * 100).toInt()}%") }
                     }
-                    DlStatus.MERGING -> "Merging cached segments into one file…"
+                    DlStatus.MERGING -> "Merging into one file…"
                     DlStatus.QUEUED -> t.error ?: "Waiting in queue"
                     DlStatus.PAUSED -> "Paused" + if (t.downloaded > 0) " · ${formatSize(t.downloaded)} cached" else ""
                     DlStatus.FAILED -> t.error ?: "Failed"

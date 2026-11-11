@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -30,7 +31,7 @@ import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Public
-import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -78,15 +79,18 @@ import kotlinx.coroutines.flow.MutableStateFlow
 
 enum class Tab(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Rounded.Home),
-    LIBRARY("Library", Icons.Rounded.VideoLibrary),
+    VIDEOS("Videos", Icons.Rounded.VideoLibrary),
+    MUSIC("Music", Icons.Rounded.MusicNote),
     BROWSER("Browser", Icons.Rounded.Public),
     DOWNLOADS("Downloads", Icons.Rounded.Download),
-    SETTINGS("Settings", Icons.Rounded.Settings),
 }
 
 /** Tiny in-app event bus for navigation between tabs. */
 object AppBus {
     val tab = MutableStateFlow(Tab.HOME)
+
+    /** Settings is a full-screen page opened from Home rather than a tab. */
+    val settingsOpen = MutableStateFlow(false)
 
     /** A link shared to the app, shown in the Home URL box. */
     val incomingUrl = MutableStateFlow<String?>(null)
@@ -158,6 +162,15 @@ private fun MainApp(browser: BrowserHolder) {
         LaunchedEffect(Unit) { ask.launch(Manifest.permission.POST_NOTIFICATIONS) }
     }
 
+    val settings by AppBus.settingsOpen.collectAsState()
+    if (settings) {
+        BackHandler { AppBus.settingsOpen.value = false }
+        Box(Modifier.fillMaxSize().background(VdoColors.Background).systemBarsPadding()) {
+            SettingsScreen(onBack = { AppBus.settingsOpen.value = false })
+        }
+        return
+    }
+
     BackHandler(enabled = tab != Tab.HOME) {
         if (tab == Tab.BROWSER && browser.goBack()) return@BackHandler
         AppBus.tab.value = Tab.HOME
@@ -195,10 +208,10 @@ private fun MainApp(browser: BrowserHolder) {
         Box(Modifier.fillMaxSize().background(VdoColors.Background).padding(padding)) {
             when (tab) {
                 Tab.HOME -> HomeScreen()
-                Tab.LIBRARY -> LibraryScreen()
+                Tab.VIDEOS -> LibraryScreen(audio = false)
+                Tab.MUSIC -> LibraryScreen(audio = true)
                 Tab.BROWSER -> BrowserScreen(browser)
                 Tab.DOWNLOADS -> DownloadsScreen()
-                Tab.SETTINGS -> SettingsScreen()
             }
         }
     }
