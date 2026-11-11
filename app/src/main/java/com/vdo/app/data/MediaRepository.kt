@@ -19,6 +19,7 @@ data class LocalMedia(
     val size: Long,
     val date: Long,
     val folder: String,
+    val genre: String = "",
     val artist: String,
     val albumId: Long,
     val isAudio: Boolean,
@@ -48,6 +49,7 @@ object MediaRepository {
             add(MediaStore.MediaColumns.DATA); add("duration")
             if (audio) {
                 add(MediaStore.Audio.Media.TITLE); add(MediaStore.Audio.Media.ARTIST); add(MediaStore.Audio.Media.ALBUM_ID)
+                if (Build.VERSION.SDK_INT >= 30) add("genre")
             } else add(MediaStore.MediaColumns.HEIGHT)
         }.toTypedArray()
         val out = ArrayList<LocalMedia>()
@@ -71,6 +73,8 @@ object MediaRepository {
                         size = c.getLong(col(MediaStore.MediaColumns.SIZE)),
                         date = c.getLong(col(MediaStore.MediaColumns.DATE_ADDED)),
                         folder = path.substringBeforeLast('/', "").substringAfterLast('/').ifEmpty { "Internal storage" },
+                        genre = (if (audio && col("genre") >= 0) c.getString(col("genre")) else null)
+                            ?.trim().orEmpty().ifEmpty { "Unknown genre" },
                         artist = if (artist == "<unknown>") "Unknown artist" else artist,
                         albumId = if (audio) c.getLong(col(MediaStore.Audio.Media.ALBUM_ID)) else 0,
                         isAudio = audio,

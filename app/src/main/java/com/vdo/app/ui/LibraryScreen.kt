@@ -26,7 +26,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.activity.compose.BackHandler
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Sort
+import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.Category
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.SortByAlpha
+import androidx.compose.ui.graphics.vector.ImageVector
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
@@ -69,6 +80,23 @@ import com.vdo.app.data.LocalMedia
 import com.vdo.app.data.MediaRepository
 import com.vdo.app.player.PlayerHub
 
+/** Ways to categorise the library. Artist and genre only make sense for music. */
+private enum class GroupBy(val label: String, val icon: ImageVector, val musicOnly: Boolean = false) {
+    FOLDER("Folders", Icons.Rounded.Folder),
+    ARTIST("Artists", Icons.Rounded.Person, true),
+    GENRE("Genres", Icons.Rounded.Category, true),
+    DATE("Date", Icons.Rounded.CalendarMonth),
+    NAME("A–Z", Icons.Rounded.SortByAlpha);
+
+    fun key(m: LocalMedia): String = when (this) {
+        FOLDER -> m.folder
+        ARTIST -> m.artist.ifBlank { "Unknown artist" }
+        GENRE -> m.genre.ifBlank { "Unknown genre" }
+        DATE -> SimpleDateFormat("MMMM yyyy", Locale.getDefault()).format(Date(m.date * 1000))
+        NAME -> m.title.trim().firstOrNull()?.takeIf { it.isLetter() }?.uppercase() ?: "#"
+    }
+}
+
 private enum class SortBy(val label: String) { DATE("Newest first"), NAME("Name"), SIZE("Largest first"), DURATION("Longest first") }
 
 @Composable
@@ -83,7 +111,9 @@ fun LibraryScreen() {
     var searching by rememberSaveable { mutableStateOf(false) }
     var sort by rememberSaveable { mutableStateOf(SortBy.DATE) }
     var sortMenu by remember { mutableStateOf(false) }
-    var folder by rememberSaveable { mutableStateOf<String?>(null) }
+    // How the list is categorised (null = everything in one list) and which category is open.
+    var groupBy by rememberSaveable { mutableStateOf<GroupBy?>(null) }
+    var group by rememberSaveable { mutableStateOf<String?>(null) }
     var info by remember { mutableStateOf<LocalMedia?>(null) }
 
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
@@ -126,8 +156,8 @@ fun LibraryScreen() {
             }
         }
         TabRow(selectedTabIndex = tab, containerColor = Color.Transparent, contentColor = VdoColors.RoseGold) {
-            Tab(tab == 0, onClick = { tab = 0; folder = null }, text = { Text("Videos" + (videos?.let { " (${it.size})" } ?: "")) })
-            Tab(tab == 1, onClick = { tab = 1; folder = null }, text = { Text("Music" + (audio?.let { " (${it.size})" } ?: "")) })
+            Tab(tab == 0, onClick = { tab = 0; groupBy = null; group = null }, text = { Text("Videos" + (videos?.let { " (${it.size})" } ?: "")) })
+            Tab(tab == 1, onClick = { tab = 1; groupBy = null; group = null }, text = { Text("Music" + (audio?.let { " (${it.size})" } ?: "")) })
         }
 
         if (!granted) {
@@ -139,23 +169,76 @@ fun LibraryScreen() {
 
         val all = (if (tab == 0) videos else audio)
         if (all == null) return@Column
-        val folders = remember(all) { all.groupingBy { it.folder }.eachCount().entries.sortedByDescending { it.value }.map { it.key } }
-        val shown = remember(all, query, sort, folder) {
-            all.filter { (folder == null || it.folder == folder) && (query.isBlank() || it.title.contains(query, true) || it.artist.contains(query, true)) }
-                .let { list ->
-                    when (sort) {
-                        SortBy.DATE -> list.sortedByDescending { it.date }
-                        SortBy.NAME -> list.sortedBy { it.title.lowercase() }
-                        SortBy.SIZE -> list.sortedByDescending { it.size }
-                        SortBy.DURATION -> list.sortedByDescending { it.duration }
-                    }
+        val by = groupBy
+        val matching = remember(all, query) {
+            all.filter { query.isBlank() || it.title.contains(query, true) || it.artist.contains(query, true) }
+        }
+        val shown = remember(matching, sort, by, group) {
+            matching.filter { by == null || group == null || by.key(it) == group }.let { list ->
+                when (sort) {
+                    SortBy.DATE -> list.sortedByDescending { it.date }
+                    SortBy.NAME -> list.sortedBy { it.title.lowercase() }
+                    SortBy.SIZE -> list.sortedByDescending { it.size }
+                    SortBy.DURATION -> list.sortedByDescending { it.duration }
                 }
+            }
         }
 
-        if (folders.size > 1) {
-            LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                item { FilterChip(folder == null, onClick = { folder = null }, label = { Text("All") }) }
-                items(folders) { f -> FilterChip(folder == f, onClick = { folder = if (folder == f) null else f }, label = { Text(f) }) }
+        LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            item { FilterChip(by == null, onClick = { groupBy = null; group = null }, label = { Text(if (tab == 0) "All videos" else "All songs") }) }
+            items(GroupBy.entries.filter { tab == 1 || !it.musicOnly }) { g ->
+                FilterChip(by == g, onClick = { groupBy = g; group = null }, label = { Text(g.label) })
+            }
+        }
+
+        // A category is chosen but none is open yet: list the categories.
+        if (by != null && group == null) {
+            val groups = remember(matching, by) {
+                val grouped = matching.groupBy { by.key(it) }
+                val keys = if (by == GroupBy.DATE) grouped.keys.sortedByDescending { k -> grouped.getValue(k).maxOf { it.date } }
+                else grouped.keys.sortedWith(compareBy({ it == "#" || it.startsWith("Unknown") }, { it.lowercase() }))
+                keys.map { it to grouped.getValue(it) }
+            }
+            if (groups.isEmpty()) {
+                Empty(by.icon, "Nothing here yet", "Media on your device will be organised here.")
+                return@Column
+            }
+            LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
+                items(groups, key = { it.first }) { (name, members) ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { group = name }.padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)).background(VdoColors.SurfaceHigh),
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(by.icon, null, tint = VdoColors.RoseGold) }
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(name, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 15.sp)
+                            Text(
+                                "${members.size} ${if (tab == 0) "video" else "song"}${if (members.size == 1) "" else "s"} · " +
+                                    formatTime(members.sumOf { it.duration }),
+                                color = VdoColors.Muted, fontSize = 12.sp,
+                            )
+                        }
+                    }
+                }
+            }
+            return@Column
+        }
+
+        if (by != null && group != null) {
+            BackHandler { group = null }
+            Row(
+                Modifier.fillMaxWidth().clickable { group = null }.padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { group = null }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back to ${by.label}", tint = Color.White) }
+                Column {
+                    Text(group!!, color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(by.label, color = VdoColors.Muted, fontSize = 12.sp)
+                }
             }
         }
 
@@ -212,6 +295,8 @@ fun LibraryScreen() {
                     Text("Size: ${formatSize(m.size)}")
                     if (m.height > 0) Text("Resolution: ${m.height}p")
                     if (m.isAudio) Text("Artist: ${m.artist}")
+                    if (m.isAudio) Text("Genre: ${m.genre}")
+                    Text("Added: ${SimpleDateFormat("d MMM yyyy", Locale.getDefault()).format(Date(m.date * 1000))}")
                 }
             },
         )
