@@ -222,6 +222,9 @@ private fun MainApp(browser: BrowserHolder) {
 /** Shows what is playing above the navigation bar. */
 @Composable
 private fun MiniPlayer() {
+    // Only connect when something has been played; otherwise opening the app would start the
+    // whole player service for nothing.
+    if (!com.vdo.app.player.PlaybackService.alive) return
     val controller = rememberController()
     val ctx = LocalContext.current
     var version by remember { mutableIntStateOf(0) }

@@ -120,6 +120,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        alive = true
         Store.init(this)
         val http = DefaultHttpDataSource.Factory()
             .setUserAgent(Http.UA)
@@ -238,7 +239,14 @@ class PlaybackService : MediaSessionService() {
         AudioFx.release()
         session?.run { player.release(); release() }
         session = null
+        alive = false
         super.onDestroy()
+    }
+
+    companion object {
+        /** Whether the player service exists, so screens can avoid starting it just to look. */
+        var alive by mutableStateOf(false)
+            private set
     }
 }
 
