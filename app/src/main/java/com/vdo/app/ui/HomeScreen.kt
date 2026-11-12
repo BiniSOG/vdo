@@ -401,6 +401,9 @@ fun DownloadSheet(url: String, headers: Map<String, String>, suggestedTitle: Str
                     Spacer(Modifier.height(12.dp))
                     OutlinedButton(onClick = { start(DlKind.DIRECT, url, false) }) { Text("Try downloading anyway") }
                 }
+                p.isHtml && AppBus.tab.value == com.vdo.app.Tab.BROWSER -> Text(
+                    "This address is a web page, not a video file. Play the video on the page and VDO will offer it for download.",
+                )
                 p.isHtml -> {
                     Text("This link is a web page, not a media file. Open it in the browser and VDO will detect the videos on it.")
                     Spacer(Modifier.height(12.dp))

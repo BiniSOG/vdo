@@ -58,6 +58,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -123,20 +124,48 @@ private val AD_HOSTS = listOf(
 private const val DESKTOP_UA =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-// Reports <video>/<audio> sources that never show up as a recognisable network request.
+// Looks through the page itself for videos: media elements, the share tags most sites publish
+// for link previews (og:video, twitter:player:stream), structured data and plain links to media
+// files. This finds many videos before they are played. window.__vdoScan() runs it again.
 private const val SNIFF_JS = """
 (function(){
-  if (window.__vdo) return; window.__vdo = true;
+  if (window.__vdo) { try { window.__vdoScan(); } catch (e) {} return; }
+  window.__vdo = true;
   var seen = {};
+  function send(u, kind){
+    try { u = new URL(u, location.href).href; } catch (e) { return; }
+    if (u.indexOf('http') !== 0 || seen[u]) return;
+    seen[u] = 1;
+    VDO.found(u, kind);
+  }
+  var mediaExt = /\.(m3u8|mpd|mp4|m4v|webm|mkv|mov|mp3|m4a|aac|ogg|opus|wav|flac)([?#]|$)/i;
   function scan(){
     try {
       var els = document.querySelectorAll('video, audio, video source, audio source');
       for (var i = 0; i < els.length; i++) {
-        var u = els[i].currentSrc || els[i].src;
-        if (u && u.indexOf('http') === 0 && !seen[u]) { seen[u] = 1; VDO.found(u, els[i].tagName); }
+        var u = els[i].currentSrc || els[i].src || els[i].getAttribute('src');
+        if (u && u.indexOf('blob:') !== 0) send(u, els[i].closest('audio') ? 'AUDIO' : 'VIDEO');
+      }
+      var metas = document.querySelectorAll(
+        'meta[property="og:video"], meta[property="og:video:url"], meta[property="og:video:secure_url"],' +
+        'meta[name="twitter:player:stream"], meta[property="og:audio"], meta[itemprop="contentUrl"]');
+      for (var j = 0; j < metas.length; j++) {
+        var c = metas[j].getAttribute('content');
+        if (c) send(c, (metas[j].getAttribute('property') || '').indexOf('audio') >= 0 ? 'AUDIO' : 'VIDEO');
+      }
+      var ld = document.querySelectorAll('script[type="application/ld+json"]');
+      for (var k = 0; k < ld.length; k++) {
+        var m = (ld[k].textContent || '').match(/"contentUrl"\s*:\s*"([^"]+)"/g) || [];
+        for (var n = 0; n < m.length; n++) send(m[n].replace(/^.*:\s*"/, '').replace(/"$/, '').split('\\/').join('/'), 'VIDEO');
+      }
+      var links = document.querySelectorAll('a[href]');
+      for (var l = 0; l < links.length && l < 2000; l++) {
+        var h = links[l].getAttribute('href');
+        if (h && mediaExt.test(h)) send(h, 'LINK');
       }
     } catch (e) {}
   }
+  window.__vdoScan = scan;
   scan(); setInterval(scan, 2000);
 })();
 """
@@ -175,6 +204,13 @@ private const val HOOK_JS = """
     return !type || type.indexOf('text/') === 0 || type.indexOf('xml') >= 0 || type.indexOf('json') >= 0 ||
       type.indexOf('octet-stream') >= 0 || type.indexOf('mpegurl') >= 0;
   }
+  function mediaType(type, u){
+    type = (type || '').toLowerCase();
+    if (type.indexOf('video/') !== 0 && type.indexOf('audio/') !== 0) return null;
+    // Stream segments are covered by their playlist; listing each one would flood the list.
+    if (/\.(ts|m4s|cmfv|cmfa)([?#]|$)/i.test(u || '') || type.indexOf('mp2t') >= 0 || type.indexOf('iso.segment') >= 0) return null;
+    return type.indexOf('audio/') === 0 ? 'AUDIO' : 'VIDEO';
+  }
   var realFetch = window.fetch;
   if (realFetch) {
     window.fetch = function(input, init){
@@ -185,6 +221,8 @@ private const val HOOK_JS = """
             var type = res.headers.get('content-type');
             var k = kindOf(type, null);
             if (k) { report(res.url, k); return; }
+            var mt = mediaType(type, res.url);
+            if (mt) { report(res.url, mt); return; }
             var len = parseInt(res.headers.get('content-length') || '0', 10);
             if (!texty(type) || len > 1500000) return;
             res.clone().text().then(function(t){
@@ -208,6 +246,7 @@ private const val HOOK_JS = """
           if (xhr.responseType === '' || xhr.responseType === 'text') head = (xhr.responseText || '').slice(0, 800);
           var k = kindOf(type, head);
           if (k) report(xhr.responseURL || url, k);
+          else { var mt = mediaType(type, xhr.responseURL || url); if (mt) report(xhr.responseURL || url, mt); }
         } catch (e) {}
       });
     } catch (e) {}
@@ -303,6 +342,12 @@ class BrowserHolder(private val activity: Activity) {
         return true
     }
 
+    /** Looks through the current page again (after the user starts a video, opens a menu, etc.). */
+    fun rescan() {
+        if (showStart) return
+        web?.evaluateJavascript(SNIFF_JS, null)
+    }
+
     fun exitFullscreen() {
         fullscreenCallback?.onCustomViewHidden()
         fullscreenCallback = null
@@ -342,6 +387,7 @@ class BrowserHolder(private val activity: Activity) {
             // with a fresh query string), so one entry per file is enough.
             val key = link.substringBefore('?')
             if (detected.any { it.url.substringBefore('?') == key }) return@runOnUiThread
+            if (detected.size >= 40) return@runOnUiThread
             val headers = LinkedHashMap<String, String>()
             extraHeaders.forEach { (k, v) ->
                 if (!k.equals("Range", true) && !k.equals("Accept-Encoding", true)) headers[k] = v
@@ -360,6 +406,7 @@ class BrowserHolder(private val activity: Activity) {
             val type = when {
                 tag == "M3U8" || tag == "MPD" -> tag // recognised by content, whatever the address looks like
                 ext != null -> ext
+                tag == "LINK" -> "VIDEO"
                 tag.equals("AUDIO", true) -> "AUDIO"
                 else -> "VIDEO"
             }
@@ -408,6 +455,9 @@ class BrowserHolder(private val activity: Activity) {
             detected.clear()
             blockedNotice = false
             drmNotice = false
+            // Typing or tapping a direct link to a media file opens it as the page itself; its
+            // request was seen just before this reset, so offer it again.
+            MEDIA.find(link.substringBefore('#'))?.let { offer(link, it.groupValues[1].uppercase()) }
             // Older WebViews can't inject at document start; this is the earliest fallback.
             if (!earlyHook) view.evaluateJavascript(HOOK_JS, null)
         }
@@ -574,7 +624,8 @@ fun BrowserScreen(holder: BrowserHolder) {
                 NavButton(Modifier.weight(1f), !holder.showStart, { holder.showStart = true }) { Icon(Icons.Rounded.Home, "Start page") }
                 NavButton(Modifier.weight(1f), true, { panel = Panel.HISTORY }) { Icon(Icons.Rounded.History, "History") }
                 val found = if (holder.showStart) 0 else holder.detected.size
-                NavButton(Modifier.weight(1f), found > 0, { panel = Panel.MEDIA }) {
+                // Always available: with nothing found yet it explains what to do instead of doing nothing.
+                NavButton(Modifier.weight(1f), !holder.showStart, { holder.rescan(); panel = Panel.MEDIA }) {
                     BadgedBox(badge = { if (found > 0) Badge { Text("$found") } }) {
                         Icon(Icons.Rounded.Download, "Detected media")
                     }
@@ -608,9 +659,33 @@ fun BrowserScreen(holder: BrowserHolder) {
         ModalBottomSheet(onDismissRequest = { panel = Panel.NONE }, containerColor = VdoColors.Surface) {
             when (panel) {
                 Panel.MEDIA -> {
-                    SheetHeader("Media on this page")
+                    SheetHeader("Media on this page") {
+                        TextButton(onClick = { holder.rescan() }) { Text("Scan again", color = VdoColors.RoseGold) }
+                    }
+                    if (holder.detected.isEmpty()) {
+                        Column(Modifier.padding(horizontal = 24.dp, vertical = 8.dp).navigationBarsPadding()) {
+                            Text("No video found on this page yet", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Start playing the video. VDO picks it up as soon as it begins, and the download button appears.",
+                                color = VdoColors.Muted, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+                            )
+                            if (holder.blockedNotice) {
+                                Text("Downloads aren't available on this site.", color = VdoColors.RoseGold, fontSize = 13.sp)
+                            } else if (holder.drmNotice) {
+                                Text("This page's video is DRM-encrypted and can't be saved.", color = VdoColors.RoseGold, fontSize = 13.sp)
+                            } else {
+                                OutlinedButton(onClick = {
+                                    panel = Panel.NONE
+                                    download = Detected(holder.url, "PAGE", emptyMap(), holder.title)
+                                }) { Text("Check this page's address instead") }
+                            }
+                            Spacer(Modifier.height(12.dp))
+                        }
+                    }
+                    // Whole streams and files first, then anything else that was spotted.
+                    val order = listOf("M3U8", "MPD", "MP4", "WEBM", "MKV", "MOV", "M4V", "VIDEO", "FILE")
                     LazyColumn(Modifier.navigationBarsPadding()) {
-                        items(holder.detected.toList(), key = { it.url }) { d ->
+                        items(holder.detected.sortedBy { order.indexOf(it.type).let { i -> if (i < 0) order.size else i } }, key = { it.url }) { d ->
                             Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 8.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     d.type, color = VdoColors.RoseGold, fontWeight = FontWeight.Bold, fontSize = 11.sp,
