@@ -174,6 +174,16 @@ class PlaybackService : MediaSessionService() {
         })
         SleepTimer.player = player
 
+        // Also save every few seconds while playing, so the place is kept even if the app is
+        // swiped away, the battery dies or the system stops it without warning.
+        val tick = object : Runnable {
+            override fun run() {
+                if (player.isPlaying) save(player.currentMediaItem?.mediaId, player.currentPosition, player.duration)
+                saver.postDelayed(this, 4000)
+            }
+        }
+        saver.postDelayed(tick, 4000)
+
         val activity = PendingIntent.getActivity(
             this, 0, Intent(this, PlayerActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
@@ -198,6 +208,15 @@ class PlaybackService : MediaSessionService() {
             .build()
     }
 
+    private val saver = Handler(Looper.getMainLooper())
+
+    private fun saveNow() {
+        val p = session?.player ?: return
+        if (p.mediaItemCount > 0 && p.playbackState != Player.STATE_ENDED && p.playbackState != Player.STATE_IDLE) {
+            save(p.currentMediaItem?.mediaId, p.currentPosition, p.duration)
+        }
+    }
+
     private fun save(id: String?, pos: Long, duration: Long) {
         if (id == null) return
         val nearEnd = duration > 0 && pos > duration - 5000
@@ -207,11 +226,14 @@ class PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo) = session
 
     override fun onTaskRemoved(rootIntent: Intent?) {
+        saveNow()
         val p = session?.player
         if (p == null || !p.playWhenReady || p.mediaItemCount == 0) stopSelf()
     }
 
     override fun onDestroy() {
+        saveNow()
+        saver.removeCallbacksAndMessages(null)
         SleepTimer.player = null
         AudioFx.release()
         session?.run { player.release(); release() }

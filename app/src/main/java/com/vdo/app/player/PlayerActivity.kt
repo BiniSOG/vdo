@@ -201,6 +201,8 @@ private fun PlayerScreen(activity: PlayerActivity, inPip: Boolean) {
     var resize by remember { mutableIntStateOf(AspectRatioFrameLayout.RESIZE_MODE_FIT) }
     var scrubbing by remember { mutableStateOf(false) }
     var hud by remember { mutableStateOf<Pair<ImageVector, String>?>(null) }
+    // Set when playback picked up from a saved position, so the user can see it and start over.
+    var resumedFrom by remember { mutableLongStateOf(0L) }
     var audioOnly by remember { mutableStateOf(PlayerHub.audioOnly) }
 
     DisposableEffect(controller) {
@@ -237,6 +239,7 @@ private fun PlayerScreen(activity: PlayerActivity, inPip: Boolean) {
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
             .build()
         val start = if (Store.resumePlayback) Store.position(req.items[req.index].uri) else 0L
+        resumedFrom = if (start > 3000) start else 0
         c.setMediaItems(req.items.map(PlayerHub::toMediaItem), req.index, start)
         c.setPlaybackSpeed(1f)
         c.prepare()
@@ -340,6 +343,7 @@ private fun PlayerScreen(activity: PlayerActivity, inPip: Boolean) {
         }
     }
     LaunchedEffect(hud) { if (hud != null) { delay(700); hud = null } }
+    LaunchedEffect(resumedFrom) { if (resumedFrom > 0) { delay(6000); resumedFrom = 0 } }
 
     val audio = remember { activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
 
@@ -478,6 +482,18 @@ private fun PlayerScreen(activity: PlayerActivity, inPip: Boolean) {
             )
         }
 
+        if (resumedFrom > 0 && error == null) {
+            Row(
+                Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing).padding(top = 60.dp)
+                    .clip(RoundedCornerShape(50)).background(Color(0xE6151B45))
+                    .clickable { c?.seekTo(0); resumedFrom = 0 }.padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Resumed from ${formatTime(resumedFrom)}", color = Color.White, fontSize = 13.sp)
+                Text("  ·  Start over", color = VdoColors.RoseGold, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+
         hud?.let { (icon, text) ->
             Row(
                 Modifier.align(Alignment.TopCenter).windowInsetsPadding(WindowInsets.safeDrawing).padding(top = 72.dp)
@@ -565,7 +581,10 @@ private fun PlayerScreen(activity: PlayerActivity, inPip: Boolean) {
                     LazyColumn(Modifier.height(360.dp)) {
                         itemsIndexed((0 until c.mediaItemCount).map { c.getMediaItemAt(it) }) { i, item ->
                             Option(item.mediaMetadata.title?.toString() ?: "Item ${i + 1}", i == c.currentMediaItemIndex) {
-                                c.seekTo(i, 0); c.play(); close()
+                                // Picking an item from the queue resumes it too, like opening it.
+                                val at = if (Store.resumePlayback && i != c.currentMediaItemIndex) Store.position(item.mediaId) else 0L
+                                resumedFrom = if (at > 3000) at else 0
+                                c.seekTo(i, at); c.play(); close()
                             }
                         }
                     }

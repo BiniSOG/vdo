@@ -165,6 +165,51 @@ class DeviceTest {
     }
 
     @Test
+    fun reopeningAVideoResumesWhereItStopped() = runBlocking {
+        val video = MediaRepository.load(ctx, audio = false).first { it.title == "sample-clip" }
+        val id = video.uri.toString()
+        Store.setProgress(id, 0, 0)
+        Store.resumePlayback = true
+
+        // Open it in the real player screen and let it play for a while, never pausing.
+        PlayerHub.pending.value = PlayerHub.Request(listOf(video.toPlayItem()), 0)
+        val first = ActivityScenario.launch(PlayerActivity::class.java)
+        val deadline = SystemClock.elapsedRealtime() + 150_000
+        while (Store.position(id) < 5000 && SystemClock.elapsedRealtime() < deadline) Thread.sleep(500)
+        val saved = Store.position(id)
+        assertTrue("position is saved while still playing, got $saved", saved >= 5000)
+        // Leaving the player pauses the video, which saves the exact spot.
+        first.close()
+        Thread.sleep(1500)
+        val left = Store.position(id)
+        assertTrue("position kept after leaving, got $left", left >= saved)
+
+        // Open the same file again: it must start from there, not from zero.
+        var controller: MediaController? = null
+        inst.runOnMainSync {
+            val f = MediaController.Builder(ctx, SessionToken(ctx, ComponentName(ctx, PlaybackService::class.java))).buildAsync()
+            f.addListener({ controller = f.get() }, { it.run() })
+        }
+        PlayerHub.pending.value = PlayerHub.Request(listOf(video.toPlayItem()), 0)
+        ActivityScenario.launch(PlayerActivity::class.java).use {
+            var pos = -1L; var ready = false
+            while (SystemClock.elapsedRealtime() < deadline + 60_000) {
+                val c = controller
+                if (c != null) inst.runOnMainSync {
+                    ready = c.playbackState == Player.STATE_READY && c.currentMediaItem?.mediaId == id
+                    pos = c.currentPosition
+                }
+                if (ready) break
+                Thread.sleep(300)
+            }
+            assertTrue("player became ready", ready)
+            assertTrue("resumed near $left, was at $pos", pos >= left - 1500)
+        }
+        inst.runOnMainSync { controller?.stop(); controller?.release() }
+        Store.setProgress(id, 0, 0)
+    }
+
+    @Test
     fun everyScreenOpensWithoutCrashing() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             for (tab in Tab.entries) {
