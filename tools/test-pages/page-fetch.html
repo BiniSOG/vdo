@@ -1,0 +1,5 @@
+<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Fetch player page</title></head>
+<body style="background:#222;color:#eee"><h1>Fetched video, no extension</h1><video id="v" controls width="320"></video>
+<script>
+  fetch('/clip?token=abc').then(r => r.blob()).then(b => { document.getElementById('v').src = URL.createObjectURL(b); });
+</script></body></html>

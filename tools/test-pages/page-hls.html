@@ -1,0 +1,6 @@
+<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Script player page</title>
+<script src="/hls.min.js"></script></head>
+<body style="background:#222;color:#eee"><h1>Script player (blob video)</h1><video id="v" controls width="320"></video>
+<script>
+  var hls = new Hls(); hls.loadSource('/hls/index.m3u8'); hls.attachMedia(document.getElementById('v'));
+</script></body></html>

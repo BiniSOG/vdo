@@ -82,6 +82,21 @@ adb push sample-clip.mp4 /sdcard/Movies/
 adb push tone1.mp3 /sdcard/Music/Relax/ && adb push tone2.mp3 /sdcard/Music/
 ```
 
+### Browser detection check
+
+Runs the browser's injected scripts in real Chromium (Playwright) against local pages that hide
+their video the way real sites do — share tags only, a script player with a blob video, a video
+fetched by script with no file extension, and a plain video element:
+
+```
+python3 tools/extract_js.py app/src/main/java/com/vdo/app/browser/BrowserScreen.kt /tmp/vdo-js
+# serve tools/test-pages plus sample-clip.mp4, clip (same file, no extension), hls/ and hls.min.js:
+python3 tools/serve.py <media dir>
+node tools/detect_check.js /tmp/vdo-js http://127.0.0.1:8765
+```
+
+`BrowserTest` runs the same pages through the app's real browser on a device and downloads what it finds.
+
 ## Layout
 
 | Path | Contents |
