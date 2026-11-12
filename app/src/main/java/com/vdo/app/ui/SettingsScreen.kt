@@ -1,5 +1,7 @@
 package com.vdo.app.ui
 
+import android.content.Intent
+import android.net.Uri
 import android.webkit.CookieManager
 import android.webkit.WebStorage
 import android.widget.Toast
@@ -105,6 +107,15 @@ fun SettingsScreen(onBack: () -> Unit = {}) {
                 "VDO does not bypass DRM and does not download from services that prohibit it.",
             color = VdoColors.Muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text("Developed by", color = VdoColors.Muted, fontSize = 12.sp)
+            Text("Binyam Bayu", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        }
+        fun open(uri: String) = runCatching {
+            ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.onFailure { Toast.makeText(ctx, "No app found to open this", Toast.LENGTH_SHORT).show() }
+        Action("Email", "benipro.info@gmail.com") { open("mailto:benipro.info@gmail.com?subject=VDO") }
+        Action("Telegram", "@BiniSOG") { open("https://t.me/BiniSOG") }
     }
 
     if (pinDialog) {
