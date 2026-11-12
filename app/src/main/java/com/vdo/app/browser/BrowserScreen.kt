@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
+import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -264,6 +265,8 @@ private const val HOOK_JS = """
 })();
 """
 
+private const val TAG = "VDO-Browser"
+
 /** Owns the WebView so the page survives switching between tabs. */
 @SuppressLint("SetJavaScriptEnabled")
 class BrowserHolder(private val activity: Activity) {
@@ -395,6 +398,7 @@ class BrowserHolder(private val activity: Activity) {
             if (page.startsWith("http") && headers.keys.none { it.equals("Referer", true) }) headers["Referer"] = page
             if (headers.keys.none { it.equals("User-Agent", true) }) headers["User-Agent"] = webView.settings.userAgentString
             CookieManager.getInstance().getCookie(link)?.let { headers["Cookie"] = it }
+            Log.d(TAG, "found $type $link")
             detected.add(0, Detected(link, type, headers, name ?: title.ifBlank { Probe.titleFromUrl(link) }))
         }
     }
@@ -441,6 +445,7 @@ class BrowserHolder(private val activity: Activity) {
         // If the page's renderer dies (out of memory, a bad page), drop that view and return to
         // the start page instead of letting Android close the whole app.
         override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
+            Log.w(TAG, "page renderer gone (crashed=${detail.didCrash()}) on $url")
             if (view === web) {
                 fullscreen = null
                 detected.clear()
@@ -451,6 +456,7 @@ class BrowserHolder(private val activity: Activity) {
         }
 
         override fun onPageStarted(view: WebView, link: String, favicon: Bitmap?) {
+            Log.d(TAG, "page started $link")
             url = link
             detected.clear()
             blockedNotice = false
@@ -463,6 +469,7 @@ class BrowserHolder(private val activity: Activity) {
         }
 
         override fun onPageFinished(view: WebView, link: String) {
+            Log.d(TAG, "page finished $link")
             url = link
             title = view.title.orEmpty()
             canGoBack = view.canGoBack()

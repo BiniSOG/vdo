@@ -36,12 +36,14 @@ class BrowserTest {
     @Test
     fun browserFindsVideosAndDownloadsThem() {
         Ads.disabled = true
+        // Pages without a playable video first, so a video-renderer crash on a slow emulator
+        // can't hide detection results for the others.
         val cases = listOf(
-            "typed link to a video file" to ("$host/sample-clip.mp4" to "sample-clip.mp4"),
-            "page with a plain video element" to ("$host/page-video.html" to "/clip"),
-            "script player (blob video, HLS stream)" to ("$host/page-hls.html" to "index.m3u8"),
             "share page with only og:video" to ("$host/page-meta.html" to "sample-clip.mp4"),
+            "script player (blob video, HLS stream)" to ("$host/page-hls.html" to "index.m3u8"),
             "video fetched by script, no file extension" to ("$host/page-fetch.html" to "/clip"),
+            "page with a plain video element" to ("$host/page-video.html" to "/clip"),
+            "typed link to a video file" to ("$host/sample-clip.mp4" to "sample-clip.mp4"),
         )
         val report = StringBuilder()
         val found = LinkedHashMap<String, Detected>()
