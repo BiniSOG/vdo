@@ -51,6 +51,7 @@ import androidx.compose.material.icons.rounded.BrightnessMedium
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.FastRewind
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.HighQuality
 import androidx.compose.material.icons.rounded.Lock
@@ -68,7 +69,12 @@ import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Subtitles
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.VolumeUp
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Switch
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -278,6 +284,8 @@ private fun PlayerScreen(activity: PlayerActivity, inPip: Boolean) {
         shuffle = c?.shuffleModeEnabled == true,
         sleepActive = SleepTimer.endsAt > 0,
         audioOnly = audioOnly,
+        soundOn = AudioFx.enabled,
+        visualizer = Store.visualizer,
     )
     val actions = PlayerActions(
         back = { activity.finish() },
@@ -519,6 +527,7 @@ private fun PlayerScreen(activity: PlayerActivity, inPip: Boolean) {
                         MoreRow(Icons.Rounded.Subtitles, "Subtitles") { sheet = Sheet.SUBS }
                     }
                     MoreRow(Icons.Rounded.Audiotrack, "Audio track") { sheet = Sheet.AUDIO }
+                    MoreRow(Icons.Rounded.GraphicEq, "Sound & equalizer", if (AudioFx.enabled) "On" else "Off") { sheet = Sheet.SOUND }
                     MoreRow(Icons.Rounded.Speed, "Playback speed", if (ui.speed == 1f) "Normal" else "${ui.speed}x") { sheet = Sheet.SPEED }
                     if (!isAudioItem) {
                         MoreRow(
@@ -561,6 +570,7 @@ private fun PlayerScreen(activity: PlayerActivity, inPip: Boolean) {
                         }
                     }
                 }
+                Sheet.SOUND -> SoundSheet()
                 Sheet.AUDIO -> TrackSheet(c, C.TRACK_TYPE_AUDIO, "Audio track", close)
                 Sheet.SUBS -> TrackSheet(c, C.TRACK_TYPE_TEXT, "Subtitles", close)
                 Sheet.QUALITY -> TrackSheet(c, C.TRACK_TYPE_VIDEO, "Video quality", close)
@@ -609,7 +619,8 @@ private fun Option(label: String, selected: Boolean, onClick: () -> Unit) {
 
 private fun describe(f: Format, type: Int): String = when (type) {
     C.TRACK_TYPE_VIDEO -> buildString {
-        append(if (f.height > 0) "${f.height}p" else "Video")
+        val shortSide = if (f.width > 0 && f.height > 0) minOf(f.width, f.height) else f.height
+        append(if (shortSide > 0) "${shortSide}p" else "Video")
         if (f.bitrate > 0) append(" · ${f.bitrate / 1000} kbps")
     }
     else -> listOfNotNull(
@@ -651,5 +662,80 @@ private fun TrackSheet(c: Player, type: Int, title: String, close: () -> Unit) {
                 close()
             }
         }
+    }
+}
+
+
+/** Equalizer, bass, surround and volume boost. Changes are heard immediately and remembered. */
+@Composable
+fun SoundSheet() {
+    var visualizer by remember { mutableStateOf(Store.visualizer) }
+    Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState())) {
+        Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Sound", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("Equalizer, bass and volume boost", color = VdoColors.Muted, fontSize = 12.sp)
+            }
+            Switch(checked = AudioFx.enabled, onCheckedChange = { AudioFx.setOn(it) }, enabled = AudioFx.available)
+        }
+        if (!AudioFx.available) {
+            Text(
+                "Start playing something and the sound controls will appear here.",
+                color = VdoColors.Muted, modifier = Modifier.padding(24.dp),
+            )
+            return@Column
+        }
+
+        if (AudioFx.presets.isNotEmpty()) {
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(AudioFx.enabled && AudioFx.preset == -1, onClick = { AudioFx.setBand(0, AudioFx.levels.getOrElse(0) { 0 }) }, label = { Text("Custom") })
+                AudioFx.presets.forEachIndexed { i, name ->
+                    FilterChip(AudioFx.enabled && AudioFx.preset == i, onClick = { AudioFx.choosePreset(i) }, label = { Text(name) })
+                }
+            }
+        }
+
+        AudioFx.bands.forEachIndexed { i, band ->
+            val level = AudioFx.levels.getOrElse(i) { 0 }
+            FxSlider(
+                label = if (band.centerHz >= 1000) "${band.centerHz / 1000} kHz" else "${band.centerHz} Hz",
+                value = level.toFloat(), range = band.min.toFloat()..band.max.toFloat(),
+                valueText = (if (level > 0) "+" else "") + "${level / 100} dB",
+            ) { AudioFx.setBand(i, it.toInt()) }
+        }
+
+        FxSlider("Bass boost", AudioFx.bassStrength.toFloat(), 0f..1000f, "${AudioFx.bassStrength / 10}%") { AudioFx.changeBass(it.toInt()) }
+        FxSlider("Surround", AudioFx.surround.toFloat(), 0f..1000f, "${AudioFx.surround / 10}%") { AudioFx.changeSurround(it.toInt()) }
+        FxSlider("Volume boost", AudioFx.boost.toFloat(), 0f..2000f, "+${AudioFx.boost / 100} dB") { AudioFx.changeBoost(it.toInt()) }
+        if (AudioFx.boost > 1200) {
+            Text(
+                "High boost can distort the sound and is hard on small speakers.",
+                color = VdoColors.RoseGold, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 24.dp),
+            )
+        }
+
+        Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 16.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Music visualizer", modifier = Modifier.weight(1f))
+            Switch(checked = visualizer, onCheckedChange = { visualizer = it; Store.visualizer = it })
+        }
+        TextButton(onClick = { AudioFx.reset() }, modifier = Modifier.padding(horizontal = 12.dp)) {
+            Text("Reset sound", color = VdoColors.RoseGold)
+        }
+    }
+}
+
+@Composable
+private fun FxSlider(label: String, value: Float, range: ClosedFloatingPointRange<Float>, valueText: String, onChange: (Float) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, modifier = Modifier.width(96.dp), fontSize = 14.sp)
+        Slider(
+            value = value.coerceIn(range.start, range.endInclusive), onValueChange = onChange, valueRange = range,
+            colors = SliderDefaults.colors(thumbColor = VdoColors.RoseGold, activeTrackColor = VdoColors.Violet),
+            modifier = Modifier.weight(1f),
+        )
+        Text(valueText, color = VdoColors.Muted, fontSize = 12.sp, modifier = Modifier.width(52.dp), textAlign = androidx.compose.ui.text.style.TextAlign.End)
     }
 }

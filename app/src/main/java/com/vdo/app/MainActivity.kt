@@ -78,9 +78,9 @@ import com.vdo.app.ui.VdoTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 
 enum class Tab(val label: String, val icon: ImageVector) {
-    HOME("Home", Icons.Rounded.Home),
     VIDEOS("Videos", Icons.Rounded.VideoLibrary),
     MUSIC("Music", Icons.Rounded.MusicNote),
+    HOME("Home", Icons.Rounded.Home),
     BROWSER("Browser", Icons.Rounded.Public),
     DOWNLOADS("Downloads", Icons.Rounded.Download),
 }
@@ -180,6 +180,8 @@ private fun MainApp(browser: BrowserHolder) {
         containerColor = VdoColors.Navy,
         bottomBar = {
             Column {
+                // One quiet banner above the navigation; the browser keeps its full height.
+                if (tab != Tab.BROWSER) com.vdo.app.ui.AdBanner()
                 MiniPlayer()
                 NavigationBar(containerColor = Color(0xFF0D1236)) {
                     Tab.entries.forEach { t ->

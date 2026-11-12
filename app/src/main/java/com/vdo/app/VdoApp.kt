@@ -12,6 +12,7 @@ class VdoApp : Application(), ImageLoaderFactory {
         super.onCreate()
         Store.init(this)
         Downloads.init(this)
+        com.vdo.app.ui.Ads.init(this)
     }
 
     /** Coil with video-frame support so video files get real thumbnails. */

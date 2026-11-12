@@ -1,3 +1,10 @@
 <resources>
     <string name="app_name">VDO</string>
+
+    <!--
+        AdMob identifiers. These are Google's public TEST ids, which always show sample ads.
+        Before publishing, replace both with the ids from your own AdMob account.
+    -->
+    <string name="admob_app_id" translatable="false">ca-app-pub-3940256099942544~3347511713</string>
+    <string name="admob_banner_id" translatable="false">ca-app-pub-3940256099942544/6300978111</string>
 </resources>

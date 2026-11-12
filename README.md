@@ -13,6 +13,7 @@ Kotlin, Jetpack Compose, Media3 (ExoPlayer). Android 8.0+ (API 26).
 - Picture-in-picture, background playback, "play as audio" for videos
 - Lock-screen / notification controls, queue, repeat, shuffle, sleep timer
 - Remembers where you stopped
+- Music player with a live visualizer and a sound panel: equalizer with presets, bass boost, surround and volume boost
 
 **Downloads**
 - Paste a link on Home, or open a page in the browser and tap the download button on detected media
@@ -30,6 +31,12 @@ Kotlin, Jetpack Compose, Media3 (ExoPlayer). Android 8.0+ (API 26).
 **Videos and Music**
 - Everything on the device, with thumbnails, search, sort, grid or list, play all and shuffle
 - Music grouped by folder, artist, genre, date or name; videos by folder, date or name
+
+**Ads**
+- One adaptive AdMob banner above the navigation bar and one on the browser start page. No full-screen ads,
+  nothing over the player, and no space is taken until an ad has loaded.
+- `app/src/main/res/values/strings.xml` ships Google's public test ids. Replace `admob_app_id` and
+  `admob_banner_id` with your own before publishing, and add a consent prompt where the law requires one.
 
 ## What it does not do
 

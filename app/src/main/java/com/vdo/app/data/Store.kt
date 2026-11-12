@@ -24,6 +24,15 @@ object Store {
     var seekSeconds by int("seek_seconds", 10)
     var gestures by bool("gestures", true)
 
+    // Sound enhancements
+    var fxEnabled by bool("fx_enabled", false)
+    var fxPreset by int("fx_preset", -1)
+    var fxLevels by string("fx_levels", "")
+    var fxBass by int("fx_bass", 0)
+    var fxSurround by int("fx_surround", 0)
+    var fxBoost by int("fx_boost", 0)
+    var visualizer by bool("visualizer", true)
+
     // Library
     var videoGrid by bool("video_grid", true)
 

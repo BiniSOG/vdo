@@ -245,8 +245,12 @@ class BrowserHolder(private val activity: Activity) {
     private var earlyHook = false
     private val mobileUa: String by lazy { WebSettings.getDefaultUserAgent(activity) }
 
-    val webView: WebView by lazy {
-        created = true
+    private var web: WebView? = null
+
+    /** The page view, created on first use and again after a renderer crash. */
+    val webView: WebView get() = web ?: createWebView().also { web = it; created = true }
+
+    private fun createWebView(): WebView =
         WebView(activity).apply {
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
             settings.apply {
@@ -275,7 +279,6 @@ class BrowserHolder(private val activity: Activity) {
             }
             applyDesktopMode(this)
         }
-    }
 
     private fun applyDesktopMode(view: WebView) {
         view.settings.userAgentString = if (Store.desktopMode) DESKTOP_UA else mobileUa
@@ -307,7 +310,9 @@ class BrowserHolder(private val activity: Activity) {
     }
 
     fun destroy() {
-        if (created) runCatching { (webView.parent as? ViewGroup)?.removeView(webView); webView.destroy() }
+        web?.let { w -> runCatching { (w.parent as? ViewGroup)?.removeView(w); w.destroy() } }
+        web = null
+        created = false
     }
 
     private fun unsupported(link: String): Boolean {
@@ -384,6 +389,18 @@ class BrowserHolder(private val activity: Activity) {
                 offer(link, m.groupValues[1].uppercase(), null, request.requestHeaders ?: emptyMap())
             }
             return null
+        }
+
+        // If the page's renderer dies (out of memory, a bad page), drop that view and return to
+        // the start page instead of letting Android close the whole app.
+        override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
+            if (view === web) {
+                fullscreen = null
+                detected.clear()
+                showStart = true
+                destroy()
+            }
+            return true
         }
 
         override fun onPageStarted(view: WebView, link: String, favicon: Bitmap?) {
@@ -686,6 +703,7 @@ fun BrowserStart(bookmarks: List<WebEntry>, history: List<WebEntry>, modifier: M
                 com.vdo.app.ui.Step(3, "Tap the download button", "It appears in the corner when a video is found.")
             }
         }
+        item { com.vdo.app.ui.AdBanner(Modifier.padding(vertical = 4.dp)) }
         if (bookmarks.isNotEmpty()) {
             item { com.vdo.app.ui.SectionTitle("Bookmarks", Modifier.padding(top = 4.dp, bottom = 4.dp)) }
             items(bookmarks.take(12)) { e -> EntryRow(e, Icons.Rounded.Bookmark, onOpen) }

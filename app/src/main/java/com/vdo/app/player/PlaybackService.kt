@@ -24,7 +24,10 @@ import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaController
 import androidx.media3.session.MediaSession
@@ -127,7 +130,17 @@ class PlaybackService : MediaSessionService() {
             val h = PlayerHub.headers
             if (h.isEmpty()) spec else spec.withAdditionalHeaders(h)
         }
-        val player = ExoPlayer.Builder(this)
+        // Same audio pipeline as usual, plus a tap that feeds the visualizer.
+        val renderers = object : DefaultRenderersFactory(this) {
+            override fun buildAudioSink(
+                context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean,
+            ): AudioSink = DefaultAudioSink.Builder(context)
+                .setEnableFloatOutput(enableFloatOutput)
+                .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                .setAudioProcessors(arrayOf(AudioLevels.processor()))
+                .build()
+        }
+        val player = ExoPlayer.Builder(this, renderers)
             .setMediaSourceFactory(
                 DefaultMediaSourceFactory(this).setDataSourceFactory(DefaultDataSource.Factory(this, withHeaders)),
             )
@@ -139,7 +152,10 @@ class PlaybackService : MediaSessionService() {
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
 
+        AudioFx.attach(player.audioSessionId)
         player.addListener(object : Player.Listener {
+            override fun onAudioSessionIdChanged(audioSessionId: Int) = AudioFx.attach(audioSessionId)
+
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (!isPlaying) save(player.currentMediaItem?.mediaId, player.currentPosition, player.duration)
             }
@@ -197,6 +213,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         SleepTimer.player = null
+        AudioFx.release()
         session?.run { player.release(); release() }
         session = null
         super.onDestroy()

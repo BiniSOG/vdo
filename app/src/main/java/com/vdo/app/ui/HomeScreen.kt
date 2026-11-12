@@ -179,18 +179,15 @@ fun HomeContent(
     val active = tasks.filter { it.active || it.status == DlStatus.QUEUED }
     val finished = tasks.filter { it.finished && !it.isPrivate }.take(3)
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
-        // Brand banner with settings in the corner
+        // Brand banner
         Box(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp)) {
             Image(
                 painterResource(R.drawable.vdo_logo), "VDO — Play · Stream · Download", contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxWidth().aspectRatio(2.7f).clip(RoundedCornerShape(24.dp))
                     .border(1.dp, VdoColors.RoseGold.copy(alpha = 0.22f), RoundedCornerShape(24.dp)),
             )
-            IconButton(
-                onClick = { AppBus.settingsOpen.value = true },
-                modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).clip(RoundedCornerShape(50)).background(Color(0x66000000)),
-            ) { Icon(Icons.Rounded.Settings, "Settings", tint = Color.White) }
         }
 
         // The main job of this screen: a link in, play or download out.
@@ -332,6 +329,14 @@ fun HomeContent(
                 Text("Open the browser", color = VdoColors.RoseGold)
             }
         }
+    }
+
+        // Settings stays put in the corner while the page scrolls underneath it.
+        IconButton(
+            onClick = { AppBus.settingsOpen.value = true },
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = 14.dp, end = 22.dp).clip(RoundedCornerShape(50))
+                .background(Color(0xB30B1030)).border(1.dp, VdoColors.RoseGold.copy(alpha = 0.35f), RoundedCornerShape(50)),
+        ) { Icon(Icons.Rounded.Settings, "Settings", tint = Color.White) }
     }
 }
 

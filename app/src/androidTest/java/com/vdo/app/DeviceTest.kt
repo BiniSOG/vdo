@@ -139,19 +139,29 @@ class DeviceTest {
             c.setMediaItems(listOf(PlayerHub.toMediaItem(video.toPlayItem())))
             c.prepare(); c.play()
         }
-        var pos = 0L; var state = 0; var err: String? = null; var hasVideo = false
+        var pos = 0L; var state = 0; var err: String? = null; var hasVideo = false; var sawLevels = false
         while (SystemClock.elapsedRealtime() < deadline) {
             inst.runOnMainSync {
                 pos = c.currentPosition; state = c.playbackState; err = c.playerError?.message
                 hasVideo = c.currentTracks.groups.any { it.type == androidx.media3.common.C.TRACK_TYPE_VIDEO }
             }
-            if (pos > 1500 || err != null) break
-            Thread.sleep(300)
+            if (com.vdo.app.player.AudioLevels.current()?.any { it > 0.05f } == true) sawLevels = true
+            if ((pos > 2500 && sawLevels) || pos > 6000 || err != null) break
+            Thread.sleep(100)
+        }
+        // The sound panel must be safe to use whatever effects this device offers.
+        inst.runOnMainSync {
+            com.vdo.app.player.AudioFx.changeBass(600)
+            com.vdo.app.player.AudioFx.changeBoost(500)
+            if (com.vdo.app.player.AudioFx.bands.isNotEmpty()) com.vdo.app.player.AudioFx.setBand(0, 300)
+            com.vdo.app.player.AudioFx.reset()
+            com.vdo.app.player.AudioFx.setOn(false)
         }
         inst.runOnMainSync { c.stop(); c.release() }
         assertEquals("player error", null, err)
         assertTrue("playback advanced (state=$state pos=$pos)", pos > 1500)
         assertTrue("video track detected", hasVideo)
+        assertTrue("visualizer received audio levels", sawLevels)
     }
 
     @Test

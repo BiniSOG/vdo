@@ -50,7 +50,7 @@ object MediaRepository {
             if (audio) {
                 add(MediaStore.Audio.Media.TITLE); add(MediaStore.Audio.Media.ARTIST); add(MediaStore.Audio.Media.ALBUM_ID)
                 if (Build.VERSION.SDK_INT >= 30) add("genre")
-            } else add(MediaStore.MediaColumns.HEIGHT)
+            } else { add(MediaStore.MediaColumns.HEIGHT); add(MediaStore.MediaColumns.WIDTH) }
         }.toTypedArray()
         val out = ArrayList<LocalMedia>()
         runCatching {
@@ -78,7 +78,11 @@ object MediaRepository {
                         artist = if (artist == "<unknown>") "Unknown artist" else artist,
                         albumId = if (audio) c.getLong(col(MediaStore.Audio.Media.ALBUM_ID)) else 0,
                         isAudio = audio,
-                        height = if (audio) 0 else c.getInt(col(MediaStore.MediaColumns.HEIGHT)),
+                        // The short side, so an upright 576x1024 clip is labelled 576p.
+                        height = if (audio) 0 else {
+                            val h = c.getInt(col(MediaStore.MediaColumns.HEIGHT)); val w = c.getInt(col(MediaStore.MediaColumns.WIDTH))
+                            if (w > 0 && h > 0) minOf(w, h) else h
+                        },
                     )
                 }
             }

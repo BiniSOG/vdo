@@ -1,5 +1,6 @@
 package com.vdo.app.player
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -29,6 +30,7 @@ import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.FastRewind
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.MoreVert
@@ -51,7 +53,10 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -72,7 +77,7 @@ import com.vdo.app.R
 import com.vdo.app.ui.VdoColors
 import com.vdo.app.ui.formatTime
 
-enum class Sheet { NONE, MORE, SPEED, AUDIO, SUBS, QUALITY, SLEEP, QUEUE }
+enum class Sheet { NONE, MORE, SPEED, AUDIO, SUBS, QUALITY, SLEEP, QUEUE, SOUND }
 
 /** Everything the player controls need to draw themselves. */
 data class PlayerUi(
@@ -91,6 +96,10 @@ data class PlayerUi(
     val sleepActive: Boolean = false,
     /** True when a video is being played with its picture switched off. */
     val audioOnly: Boolean = false,
+    val soundOn: Boolean = false,
+    val visualizer: Boolean = true,
+    /** Fixed levels for previews and screenshots; null means "follow the live audio". */
+    val previewLevels: FloatArray? = null,
 )
 
 class PlayerActions(
@@ -234,6 +243,52 @@ fun VideoControls(ui: PlayerUi, a: PlayerActions) {
     }
 }
 
+/**
+ * Bars that move with the music. Levels come from [AudioLevels]; the animation only runs
+ * while something is playing (plus a short fade-out), so it costs nothing when paused.
+ */
+@Composable
+fun VisualizerBars(playing: Boolean, modifier: Modifier = Modifier, preview: FloatArray? = null) {
+    val shown = remember { FloatArray(AudioLevels.BANDS) }
+    var frame by remember { mutableIntStateOf(0) }
+    if (preview == null) {
+        LaunchedEffect(playing) {
+            var idle = 0
+            while (playing || idle < 45) {
+                withFrameNanos { }
+                val target = if (playing) AudioLevels.current() else null
+                var any = false
+                for (i in shown.indices) {
+                    val t = target?.getOrNull(i) ?: 0f
+                    // Rise quickly, fall slowly: it reads as "bouncy" rather than jittery.
+                    shown[i] += (t - shown[i]) * if (t > shown[i]) 0.5f else 0.14f
+                    if (shown[i] > 0.01f) any = true
+                }
+                idle = if (playing || any) 0 else idle + 1
+                frame++
+            }
+        }
+    }
+    Canvas(modifier) {
+        @Suppress("UNUSED_EXPRESSION") frame
+        val v = preview ?: shown
+        val n = v.size
+        val slot = size.width / n
+        val w = slot * 0.58f
+        val brush = Brush.verticalGradient(listOf(VdoColors.RoseGold, VdoColors.Violet, VdoColors.Indigo))
+        for (i in 0 until n) {
+            val h = (w + (size.height - w) * v[i].coerceIn(0f, 1f))
+            drawRoundRect(
+                brush = brush,
+                topLeft = androidx.compose.ui.geometry.Offset(i * slot + (slot - w) / 2, (size.height - h) / 2),
+                size = androidx.compose.ui.geometry.Size(w, h),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(w / 2, w / 2),
+                alpha = 0.35f + 0.65f * v[i].coerceIn(0f, 1f),
+            )
+        }
+    }
+}
+
 /** Full-screen layout for music and for videos played as audio. */
 @Composable
 fun AudioPlayerLayout(ui: PlayerUi, a: PlayerActions) {
@@ -244,13 +299,25 @@ fun AudioPlayerLayout(ui: PlayerUi, a: PlayerActions) {
         fun Art(modifier: Modifier) {
             BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
                 // Square artwork that fits whichever side is shorter.
-                val side = minOf(maxWidth, maxHeight) * 0.82f
+                val side = minOf(maxWidth, maxHeight) * 0.86f
                 Image(
                     painterResource(R.drawable.vdo_icon), null, contentScale = ContentScale.Crop,
                     modifier = Modifier.size(side)
                         .clip(RoundedCornerShape(32.dp))
                         .border(1.dp, VdoColors.RoseGold.copy(alpha = 0.45f), RoundedCornerShape(32.dp)),
                 )
+            }
+        }
+
+        // Quick tools sit directly under the artwork, where the thumb already is.
+        @Composable
+        fun Tools(modifier: Modifier = Modifier) {
+            Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                Tool(Icons.Rounded.Speed, if (ui.speed == 1f) "Speed" else "${ui.speed}x", active = ui.speed != 1f) { a.open(Sheet.SPEED) }
+                Tool(Icons.Rounded.Timer, "Sleep timer", active = ui.sleepActive) { a.open(Sheet.SLEEP) }
+                Tool(Icons.AutoMirrored.Rounded.QueueMusic, "Queue") { a.open(Sheet.QUEUE) }
+                Tool(Icons.Rounded.GraphicEq, "Sound", active = ui.soundOn) { a.open(Sheet.SOUND) }
+                if (ui.audioOnly) Tool(Icons.Rounded.Videocam, "Show video", onClick = a.toggleAudioOnly)
             }
         }
 
@@ -262,12 +329,19 @@ fun AudioPlayerLayout(ui: PlayerUi, a: PlayerActions) {
                     maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
                 if (ui.artist.isNotBlank()) {
-                    Text(ui.artist, color = VdoColors.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
+                    Text(
+                        ui.artist.replace(Regex("\\s+"), " "), color = VdoColors.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
                 }
-                Spacer(Modifier.height(12.dp))
+                if (ui.visualizer) {
+                    VisualizerBars(
+                        ui.playing, Modifier.fillMaxWidth().padding(top = 10.dp).height(if (wide) 36.dp else 56.dp), ui.previewLevels,
+                    )
+                } else Spacer(Modifier.height(12.dp))
                 SeekBar(ui, a, Modifier.fillMaxWidth())
                 Row(
-                    Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 12.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Round(Icons.Rounded.Shuffle, "Shuffle", scrim = false, tint = if (ui.shuffle) VdoColors.RoseGold else Color.White, onClick = a.toggleShuffle)
@@ -279,18 +353,12 @@ fun AudioPlayerLayout(ui: PlayerUi, a: PlayerActions) {
                         tint = if (ui.repeatMode != 0) VdoColors.RoseGold else Color.White, onClick = a.cycleRepeat,
                     )
                 }
-                Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    Tool(Icons.Rounded.Speed, if (ui.speed == 1f) "Speed" else "${ui.speed}x", active = ui.speed != 1f) { a.open(Sheet.SPEED) }
-                    Tool(Icons.Rounded.Timer, "Sleep timer", active = ui.sleepActive) { a.open(Sheet.SLEEP) }
-                    if (ui.queueSize > 1) Tool(Icons.AutoMirrored.Rounded.QueueMusic, "Queue") { a.open(Sheet.QUEUE) }
-                    if (ui.audioOnly) Tool(Icons.Rounded.Videocam, "Show video", onClick = a.toggleAudioOnly)
-                }
             }
         }
 
         Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = a.back) { Icon(Icons.Rounded.KeyboardArrowDown, "Close player", tint = Color.White) }
+                IconButton(onClick = a.back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = Color.White) }
                 Text(
                     if (ui.audioOnly) "Playing as audio" else "Now playing", color = VdoColors.Muted, fontSize = 13.sp,
                     modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -299,11 +367,15 @@ fun AudioPlayerLayout(ui: PlayerUi, a: PlayerActions) {
             }
             if (wide) {
                 Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                    Art(Modifier.weight(0.8f).fillMaxHeight())
+                    Column(Modifier.weight(0.8f).fillMaxHeight()) {
+                        Art(Modifier.weight(1f).fillMaxWidth())
+                        Tools(Modifier.padding(bottom = 4.dp))
+                    }
                     Panel(Modifier.weight(1.2f))
                 }
             } else {
                 Art(Modifier.weight(1f).fillMaxWidth())
+                Tools(Modifier.padding(bottom = 12.dp))
                 Panel(Modifier.fillMaxWidth())
             }
         }

@@ -146,6 +146,7 @@ class ScreensTest {
     private val ui = PlayerUi(
         title = "Harbour at sunrise", artist = "Camera", playing = true, position = 83_000, duration = 255_000,
         hasPrev = true, hasNext = true, queueSize = 6,
+        previewLevels = FloatArray(32) { i -> (0.25 + 0.7 * kotlin.math.abs(kotlin.math.sin(i * 0.55))).toFloat() * (1f - i / 60f) },
     )
 
     @Test fun playerVideoPortrait() = shot("player_video_portrait") {
@@ -160,6 +161,8 @@ class ScreensTest {
             VideoControls(ui.copy(queueSize = 1, speed = 1.5f), PlayerActions())
         }
     }
+
+    @Test fun soundSheet() = shot("sound_sheet") { com.vdo.app.player.SoundSheet() }
 
     @Test fun playerAudio() = shot("player_audio") {
         AudioPlayerLayout(ui.copy(title = "Evening Tone", artist = "Test Artist", shuffle = true), PlayerActions())
